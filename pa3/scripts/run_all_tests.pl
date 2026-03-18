@@ -1,0 +1,35 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+if (scalar(@ARGV) != 3)
+{
+	die "Usage: test.pl <app> <suffix> <testlocation>";
+}
+
+my $app = $ARGV[0];
+my $suffix = $ARGV[1];
+my $tests = $ARGV[2];
+
+my @tests = split(/\s+/, `find $tests -type f`);
+
+for my $test (sort @tests)
+{
+	next if $test !~ m/\.t$/;
+
+	print "Running $test...\n";
+
+	my $test_out = $test;
+	$test_out =~ s/\.t$/\.$suffix/;
+	my $sys_ret = system("scripts/run_one_test.sh $app $test $test_out");
+	if ($sys_ret == 0)
+	{
+		system("echo EXIT_SUCCESS > $test_out.exit_status");
+	}
+	else
+	{
+		system("echo EXIT_FAILURE > $test_out.exit_status");
+	}
+}
+

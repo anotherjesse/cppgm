@@ -1,0 +1,17 @@
+obj/
+pa1/pptoken
+pa2/posttoken
+pa3/ctrlexpr
+pa4/macro
+pa5/preproc
+pa6/recog
+pa7/nsdecl
+pa8/nsinit
+pa9/cy86
+*.d
+*.stdout
+*.stderr
+*.exit_status
+*.my
+*.program
+*.impl.*
