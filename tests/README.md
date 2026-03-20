@@ -13,7 +13,7 @@ Repository-specific changes on top of the imported subtree:
 
 - The canonical location in this repo is `tests/` rather than the legacy
   `cppgm.tests/` path.
-- Assignment `Makefile`s look for supplemental course tests under
+- Assignment `Makefile`s look for supplemental course tests via a symlink to
   `../tests/course/paN`.
 - Historical helper patch files that are no longer needed after merging their
   changes locally were removed from this copy.
