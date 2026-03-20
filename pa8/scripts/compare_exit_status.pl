@@ -28,6 +28,19 @@ for my $test (sort @tests)
 
 	$testbase =~ s/\.t.1$//;
 
+	my $skipfile = "$testbase.compare_exit_status.skip";
+	if (-e $skipfile)
+	{
+		my $reason = `cat $skipfile`;
+		chomp($reason);
+
+		$npass++;
+		print "SKIP";
+		print ": $reason" if $reason ne "";
+		print "\n\n";
+		next;
+	}
+
         my $reftest = "$testbase.$ref_suffix";
         my $reftest_exit_status = "$reftest.exit_status";
         my $mytest = "$testbase.$my_suffix";
@@ -55,4 +68,3 @@ for my $test (sort @tests)
 }
 
 print "EXIT STATUS OF REF VS OTHER OK\n";
-

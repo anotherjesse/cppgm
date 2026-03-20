@@ -42,5 +42,5 @@ test: all
 ref-test:
 	scripts/run_all_tests.pl nsinit-ref ref tests
 	scripts/run_all_tests.pl nsinit-other other tests
-	-rm tests/*.other
-	scripts/compare_exit_status.pl other ref tests
+	-rm -f tests/*.other
+	scripts/compare_exit_status.pl other ref

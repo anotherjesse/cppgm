@@ -1,11 +1,12 @@
 #!/bin/sh
 
-in=$(tempfile) || exit
-out=$(tempfile) || exit
+in=$(mktemp) || exit
+out=$(mktemp) || exit
 
-cat > $in
+trap 'rm -f "$in" "$out"' EXIT HUP INT TERM
 
-./nsinit-other -o $out $in || exit
+cat > "$in"
 
-objdump -st $out
+./nsinit-other -o "$out" "$in" || exit
 
+objdump -st "$out"

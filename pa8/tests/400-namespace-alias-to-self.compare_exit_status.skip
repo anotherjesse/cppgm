@@ -1,0 +1,1 @@
+Skipped for other-vs-ref exit-status comparison: modern GCC accepts `namespace X = X;`, while the course reference follows the older N3485-era rule and rejects it.

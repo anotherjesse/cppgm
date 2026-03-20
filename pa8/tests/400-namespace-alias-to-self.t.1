@@ -1,5 +1,8 @@
+// NOTE:
+// This test is excluded from the optional nsinit-other vs nsinit-ref
+// exit-status comparison. The course reference follows the older N3485-era
+// rule and rejects `namespace X = X;`, while modern GCC accepts it.
 namespace X { }
 namespace X = X;
 
 int main() {}
-
