@@ -14,6 +14,7 @@ pa9/cy86
 *.exit_status
 *.my
 *.my.*
+*.check
 *.other.*
 *.program
 *.impl.*

@@ -50,6 +50,11 @@ make
 make test
 ```
 
+For focused experiments inside an assignment, use `make run INPUT=...`
+instead of invoking `../dev/<tool>` directly. For a single checked-in case,
+use `make check TEST=...`. Both paths keep dependency checks and rebuilds in
+front of the run.
+
 From the project root:
 
 - `make build`: build the canonical tools once through `dev/Makefile`

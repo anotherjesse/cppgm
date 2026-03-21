@@ -51,7 +51,3 @@ claude --permission-mode acceptEdits "Read AGENTS.md and follow it exactly. Star
 ```bash
 codex --full-auto "Read AGENTS.md and follow it exactly. Starting from the current repository state, continue the PA1 through PA9 assignment sequence in order. Reuse and extend existing code instead of starting over. Follow the checked-in tests and assignment instructions, even when they differ from newer-standard behavior. After each completed assignment, update paN/RETRO.md and keep going. Stop only when the repository root make test passes."
 ```
-
-The repository root `Makefile` supports `make build`, `make test`, and
-`make test-through-paN`. Each assignment directory also supports its own local
-`make` and `make test` workflow.
