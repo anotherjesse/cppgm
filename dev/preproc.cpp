@@ -639,7 +639,7 @@ public:
 		InstallFixedPredefinedMacros();
 	}
 
-	void ProcessSourceFile(const string& srcfile, ostream& out)
+	vector<MacroToken> ProcessSourceFileTokens(const string& srcfile)
 	{
 		output_.clear();
 		text_.clear();
@@ -647,18 +647,28 @@ public:
 		ProcessFile(srcfile);
 		FlushText();
 
-		vector<PPToken> final_tokens;
+		vector<MacroToken> final_tokens;
 		for (const MacroToken& token : output_)
 		{
 			if (token.placemarker)
 				continue;
 			if (token.type == PPT_WHITESPACE_SEQUENCE || token.type == PPT_NEW_LINE)
 				continue;
-			final_tokens.push_back(ToPPToken(token));
+			final_tokens.push_back(token);
 		}
-		PPToken eof_token;
+		MacroToken eof_token;
 		eof_token.type = PPT_EOF;
+		eof_token.source_file = srcfile;
 		final_tokens.push_back(eof_token);
+		return final_tokens;
+	}
+
+	void ProcessSourceFile(const string& srcfile, ostream& out)
+	{
+		vector<MacroToken> macro_tokens = ProcessSourceFileTokens(srcfile);
+		vector<PPToken> final_tokens;
+		for (size_t i = 0; i < macro_tokens.size(); ++i)
+			final_tokens.push_back(ToPPToken(macro_tokens[i]));
 
 		StrictPostTokenOutputStream debug(out);
 		EmitPostTokenStream(final_tokens, debug, true);
