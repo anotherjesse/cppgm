@@ -1,5 +1,9 @@
 #pragma once
 
+#include <string>
+
+using namespace std;
+
 struct IPPTokenStream
 {
 	virtual void emit_whitespace_sequence() = 0;

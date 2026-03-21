@@ -2,6 +2,11 @@
 
 #pragma once
 
+#include <iostream>
+#include <string>
+
+using namespace std;
+
 #include "IPPTokenStream.h"
 
 struct DebugPPTokenStream : IPPTokenStream

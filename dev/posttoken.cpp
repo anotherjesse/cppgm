@@ -16,6 +16,8 @@
 
 using namespace std;
 
+#include "PPLexer.h"
+
 // See 3.9.1: Fundamental Types
 enum EFundamentalType
 {
@@ -639,25 +641,67 @@ long double PA2Decode_long_double(const string& s)
 
 int main()
 {
-	// TODO:
-	// 1. apply your code from PA1 to produce `preprocessing-tokens`
-	// 2. "post-tokenize" the `preprocessing-tokens` as described in PA2
-	// 3. write them out in the PA2 output format specifed
+	try
+	{
+		ostringstream oss;
+		oss << cin.rdbuf();
 
-	// You may optionally use the above starter code.
-	//
-	// In particular there is the DebugPostTokenOutputStream class which helps form the
-	// correct output format:
+		vector<PPToken> tokens = LexPPTokens(oss.str());
+		DebugPostTokenOutputStream output;
 
-	DebugPostTokenOutputStream output;
+		for (const PPToken& token : tokens)
+		{
+			switch (token.type)
+			{
+			case PPT_WHITESPACE_SEQUENCE:
+			case PPT_NEW_LINE:
+				break;
 
-	// example usage:
+			case PPT_EOF:
+				output.emit_eof();
+				break;
 
-	output.emit_invalid("foo");
-	output.emit_simple("auto", KW_AUTO);
+			case PPT_IDENTIFIER:
+			{
+				auto it = StringToTokenTypeMap.find(token.data);
+				if (it != StringToTokenTypeMap.end())
+					output.emit_simple(token.data, it->second);
+				else
+					output.emit_identifier(token.data);
+				break;
+			}
 
-	u16string bar = u"bar";
-	output.emit_literal_array("u\"bar\"", bar.size()+1, FT_CHAR16_T, bar.data(), bar.size() * 2 + 2);
+			case PPT_PREPROCESSING_OP_OR_PUNC:
+			{
+				if (token.data == "#" || token.data == "##" || token.data == "%:" || token.data == "%:%:")
+				{
+					output.emit_invalid(token.data);
+					break;
+				}
 
-	output.emit_user_defined_literal_integer("123_ud1", "ud1", "123");
+				auto it = StringToTokenTypeMap.find(token.data);
+				if (it != StringToTokenTypeMap.end())
+					output.emit_simple(token.data, it->second);
+				else
+					output.emit_invalid(token.data);
+				break;
+			}
+
+			case PPT_PP_NUMBER:
+			case PPT_CHARACTER_LITERAL:
+			case PPT_USER_DEFINED_CHARACTER_LITERAL:
+			case PPT_STRING_LITERAL:
+			case PPT_USER_DEFINED_STRING_LITERAL:
+			case PPT_HEADER_NAME:
+			case PPT_NON_WHITESPACE_CHAR:
+				output.emit_invalid(token.data);
+				break;
+			}
+		}
+	}
+	catch (exception& e)
+	{
+		cerr << "ERROR: " << e.what() << endl;
+		return EXIT_FAILURE;
+	}
 }
