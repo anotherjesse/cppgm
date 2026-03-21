@@ -1852,7 +1852,8 @@ bool EmitStringSequence(const vector<PPToken>& filtered, size_t& i, DebugPostTok
 	return true;
 }
 
-void EmitPostTokenStream(const vector<PPToken>& filtered, DebugPostTokenOutputStream& output, bool emit_eof)
+template<typename TOutputStream>
+void EmitPostTokenStream(const vector<PPToken>& filtered, TOutputStream& output, bool emit_eof)
 {
 	size_t i = 0;
 	while (i < filtered.size())

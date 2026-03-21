@@ -20,6 +20,8 @@ struct MacroToken
 	vector<string> blocked;
 	bool placemarker = false;
 	bool inert_hashhash = false;
+	string source_file;
+	long source_line = 0;
 };
 
 struct MacroDef
@@ -906,6 +908,7 @@ vector<MacroToken> PasteTokens(const MacroToken& left, const MacroToken& right)
 	vector<MacroToken> output_;
 };
 
+#ifndef CPPGM_MACRO_LIBRARY
 int main()
 {
 	try
@@ -922,3 +925,4 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+#endif
