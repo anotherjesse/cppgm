@@ -1829,6 +1829,7 @@ pair<string, string> BuildDateTimeLiterals()
 	return make_pair(date, tm);
 }
 
+#ifndef CPPGM_PREPROC_LIBRARY
 int main(int argc, char** argv)
 {
 	try
@@ -1867,3 +1868,4 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 }
+#endif
