@@ -552,65 +552,72 @@ string HexDump(const void* pdata, size_t nbytes)
 // DebugPostTokenOutputStream: helper class to produce PA2 output format
 struct DebugPostTokenOutputStream
 {
+	explicit DebugPostTokenOutputStream(ostream& out_)
+		: out(out_)
+	{
+	}
+
 	// output: invalid <source>
 	void emit_invalid(const string& source)
 	{
-		cout << "invalid " << source << endl;
+		out << "invalid " << source << endl;
 	}
 
 	// output: simple <source> <token_type>
 	void emit_simple(const string& source, ETokenType token_type)
 	{
-		cout << "simple " << source << " " << TokenTypeToStringMap.at(token_type) << endl;
+		out << "simple " << source << " " << TokenTypeToStringMap.at(token_type) << endl;
 	}
 
 	// output: identifier <source>
 	void emit_identifier(const string& source)
 	{
-		cout << "identifier " << source << endl;
+		out << "identifier " << source << endl;
 	}
 
 	// output: literal <source> <type> <hexdump(data,nbytes)>
 	void emit_literal(const string& source, EFundamentalType type, const void* data, size_t nbytes)
 	{
-		cout << "literal " << source << " " << FundamentalTypeToStringMap.at(type) << " " << HexDump(data, nbytes) << endl;
+		out << "literal " << source << " " << FundamentalTypeToStringMap.at(type) << " " << HexDump(data, nbytes) << endl;
 	}
 
 	// output: literal <source> array of <num_elements> <type> <hexdump(data,nbytes)>
 	void emit_literal_array(const string& source, size_t num_elements, EFundamentalType type, const void* data, size_t nbytes)
 	{
-		cout << "literal " << source << " array of " << num_elements << " " << FundamentalTypeToStringMap.at(type) << " " << HexDump(data, nbytes) << endl;
+		out << "literal " << source << " array of " << num_elements << " " << FundamentalTypeToStringMap.at(type) << " " << HexDump(data, nbytes) << endl;
 	}
 
 	// output: user-defined-literal <source> <ud_suffix> character <type> <hexdump(data,nbytes)>
 	void emit_user_defined_literal_character(const string& source, const string& ud_suffix, EFundamentalType type, const void* data, size_t nbytes)
 	{
-		cout << "user-defined-literal " << source << " " << ud_suffix << " character " << FundamentalTypeToStringMap.at(type) << " " << HexDump(data, nbytes) << endl;
+		out << "user-defined-literal " << source << " " << ud_suffix << " character " << FundamentalTypeToStringMap.at(type) << " " << HexDump(data, nbytes) << endl;
 	}
 
 	// output: user-defined-literal <source> <ud_suffix> string array of <num_elements> <type> <hexdump(data, nbytes)>
 	void emit_user_defined_literal_string_array(const string& source, const string& ud_suffix, size_t num_elements, EFundamentalType type, const void* data, size_t nbytes)
 	{
-		cout << "user-defined-literal " << source << " " << ud_suffix << " string array of " << num_elements << " " << FundamentalTypeToStringMap.at(type) << " " << HexDump(data, nbytes) << endl;
+		out << "user-defined-literal " << source << " " << ud_suffix << " string array of " << num_elements << " " << FundamentalTypeToStringMap.at(type) << " " << HexDump(data, nbytes) << endl;
 	}
 
 	// output: user-defined-literal <source> <ud_suffix> <prefix>
 	void emit_user_defined_literal_integer(const string& source, const string& ud_suffix, const string& prefix)
 	{
-		cout << "user-defined-literal " << source << " " << ud_suffix << " integer " << prefix << endl;
+		out << "user-defined-literal " << source << " " << ud_suffix << " integer " << prefix << endl;
 	}
 
 	// output: user-defined-literal <source> <ud_suffix> <prefix>
 	void emit_user_defined_literal_floating(const string& source, const string& ud_suffix, const string& prefix)
 	{
-		cout << "user-defined-literal " << source << " " << ud_suffix << " floating " << prefix << endl;
+		out << "user-defined-literal " << source << " " << ud_suffix << " floating " << prefix << endl;
 	}
 
 	// output : eof
 	void emit_eof()
 	{
-		cout << "eof" << endl;
+		out << "eof" << endl;
 	}
+
+	ostream& out;
 };
 
 
@@ -1758,217 +1765,231 @@ bool EmitStringSequence(const vector<PPToken>& filtered, size_t& i, DebugPostTok
 	return true;
 }
 
+void EmitPostTokenStream(const vector<PPToken>& filtered, DebugPostTokenOutputStream& output, bool emit_eof)
+{
+	size_t i = 0;
+	while (i < filtered.size())
+	{
+		const PPToken& token = filtered[i];
+		switch (token.type)
+		{
+		case PPT_EOF:
+			if (emit_eof)
+				output.emit_eof();
+			++i;
+			break;
+
+		case PPT_IDENTIFIER:
+		{
+			auto it = StringToTokenTypeMap.find(token.data);
+			if (it != StringToTokenTypeMap.end())
+				output.emit_simple(token.data, it->second);
+			else
+				output.emit_identifier(token.data);
+			++i;
+			break;
+		}
+
+		case PPT_PREPROCESSING_OP_OR_PUNC:
+		{
+			if (token.data == "#" || token.data == "##" || token.data == "%:" || token.data == "%:%:")
+			{
+				output.emit_invalid(token.data);
+				++i;
+				break;
+			}
+
+			auto it = StringToTokenTypeMap.find(token.data);
+			if (it != StringToTokenTypeMap.end())
+				output.emit_simple(token.data, it->second);
+			else
+				output.emit_invalid(token.data);
+			++i;
+			break;
+		}
+
+		case PPT_PP_NUMBER:
+		{
+			ParsedNumberLiteral parsed = ParsePPNumberLiteral(token.data);
+			if (!parsed.ok)
+			{
+				output.emit_invalid(token.data);
+			}
+			else if (parsed.is_user_defined)
+			{
+				if (parsed.is_integer)
+					output.emit_user_defined_literal_integer(token.data, parsed.ud_suffix, parsed.prefix);
+				else
+					output.emit_user_defined_literal_floating(token.data, parsed.ud_suffix, parsed.prefix);
+			}
+			else if (parsed.is_integer)
+			{
+				EFundamentalType type = ChooseIntegerType(parsed.int_info);
+				if (type == FT_VOID)
+					output.emit_invalid(token.data);
+				else
+					EmitIntegerLiteral(output, token.data, type, parsed.int_info.value);
+			}
+			else
+			{
+				if (parsed.float_type == FT_FLOAT)
+				{
+					float x = PA2Decode_float(token.data);
+					output.emit_literal(token.data, FT_FLOAT, &x, sizeof(x));
+				}
+				else if (parsed.float_type == FT_LONG_DOUBLE)
+				{
+					long double x = PA2Decode_long_double(token.data);
+					output.emit_literal(token.data, FT_LONG_DOUBLE, &x, sizeof(x));
+				}
+				else
+				{
+					double x = PA2Decode_double(token.data);
+					output.emit_literal(token.data, FT_DOUBLE, &x, sizeof(x));
+				}
+			}
+			++i;
+			break;
+		}
+
+		case PPT_CHARACTER_LITERAL:
+		case PPT_USER_DEFINED_CHARACTER_LITERAL:
+		{
+			ParsedCharLiteral parsed = ParseCharacterLiteralToken(token);
+			if (!parsed.ok)
+			{
+				output.emit_invalid(token.data);
+			}
+			else if (parsed.user_defined)
+			{
+				switch (parsed.type)
+				{
+				case FT_CHAR:
+				{
+					char x = static_cast<char>(parsed.value);
+					output.emit_user_defined_literal_character(parsed.source, parsed.ud_suffix, FT_CHAR, &x, sizeof(x));
+					break;
+				}
+				case FT_INT:
+				{
+					int x = static_cast<int>(parsed.value);
+					output.emit_user_defined_literal_character(parsed.source, parsed.ud_suffix, FT_INT, &x, sizeof(x));
+					break;
+				}
+				case FT_CHAR16_T:
+				{
+					char16_t x = static_cast<char16_t>(parsed.value);
+					output.emit_user_defined_literal_character(parsed.source, parsed.ud_suffix, FT_CHAR16_T, &x, sizeof(x));
+					break;
+				}
+				case FT_CHAR32_T:
+				{
+					char32_t x = static_cast<char32_t>(parsed.value);
+					output.emit_user_defined_literal_character(parsed.source, parsed.ud_suffix, FT_CHAR32_T, &x, sizeof(x));
+					break;
+				}
+				case FT_WCHAR_T:
+				{
+					wchar_t x = static_cast<wchar_t>(parsed.value);
+					output.emit_user_defined_literal_character(parsed.source, parsed.ud_suffix, FT_WCHAR_T, &x, sizeof(x));
+					break;
+				}
+				default:
+					output.emit_invalid(token.data);
+					break;
+				}
+			}
+			else
+			{
+				switch (parsed.type)
+				{
+				case FT_CHAR:
+				{
+					char x = static_cast<char>(parsed.value);
+					output.emit_literal(parsed.source, FT_CHAR, &x, sizeof(x));
+					break;
+				}
+				case FT_INT:
+				{
+					int x = static_cast<int>(parsed.value);
+					output.emit_literal(parsed.source, FT_INT, &x, sizeof(x));
+					break;
+				}
+				case FT_CHAR16_T:
+				{
+					char16_t x = static_cast<char16_t>(parsed.value);
+					output.emit_literal(parsed.source, FT_CHAR16_T, &x, sizeof(x));
+					break;
+				}
+				case FT_CHAR32_T:
+				{
+					char32_t x = static_cast<char32_t>(parsed.value);
+					output.emit_literal(parsed.source, FT_CHAR32_T, &x, sizeof(x));
+					break;
+				}
+				case FT_WCHAR_T:
+				{
+					wchar_t x = static_cast<wchar_t>(parsed.value);
+					output.emit_literal(parsed.source, FT_WCHAR_T, &x, sizeof(x));
+					break;
+				}
+				default:
+					output.emit_invalid(token.data);
+					break;
+				}
+			}
+			++i;
+			break;
+		}
+
+		case PPT_STRING_LITERAL:
+		case PPT_USER_DEFINED_STRING_LITERAL:
+			EmitStringSequence(filtered, i, output);
+			break;
+
+		case PPT_HEADER_NAME:
+		case PPT_NON_WHITESPACE_CHAR:
+			output.emit_invalid(token.data);
+			++i;
+			break;
+
+		case PPT_WHITESPACE_SEQUENCE:
+		case PPT_NEW_LINE:
+			++i;
+			break;
+		}
+	}
+}
+
+void RunPostTokenOnRawInput(const string& input, ostream& out, bool emit_eof)
+{
+	vector<PPToken> tokens = LexPPTokens(input);
+	vector<PPToken> filtered;
+	for (const PPToken& token : tokens)
+	{
+		if (token.type != PPT_WHITESPACE_SEQUENCE && token.type != PPT_NEW_LINE)
+			filtered.push_back(token);
+	}
+
+	DebugPostTokenOutputStream output(out);
+	EmitPostTokenStream(filtered, output, emit_eof);
+}
+
+#ifndef CPPGM_POSTTOKEN_LIBRARY
 int main()
 {
 	try
 	{
 		ostringstream oss;
 		oss << cin.rdbuf();
-
-		vector<PPToken> tokens = LexPPTokens(oss.str());
-		vector<PPToken> filtered;
-		for (const PPToken& token : tokens)
-		{
-			if (token.type != PPT_WHITESPACE_SEQUENCE && token.type != PPT_NEW_LINE)
-				filtered.push_back(token);
-		}
-
-		DebugPostTokenOutputStream output;
-		size_t i = 0;
-		while (i < filtered.size())
-		{
-			const PPToken& token = filtered[i];
-			switch (token.type)
-			{
-			case PPT_EOF:
-				output.emit_eof();
-				++i;
-				break;
-
-			case PPT_IDENTIFIER:
-			{
-				auto it = StringToTokenTypeMap.find(token.data);
-				if (it != StringToTokenTypeMap.end())
-					output.emit_simple(token.data, it->second);
-				else
-					output.emit_identifier(token.data);
-				++i;
-				break;
-			}
-
-			case PPT_PREPROCESSING_OP_OR_PUNC:
-			{
-				if (token.data == "#" || token.data == "##" || token.data == "%:" || token.data == "%:%:")
-				{
-					output.emit_invalid(token.data);
-					++i;
-					break;
-				}
-
-				auto it = StringToTokenTypeMap.find(token.data);
-				if (it != StringToTokenTypeMap.end())
-					output.emit_simple(token.data, it->second);
-				else
-					output.emit_invalid(token.data);
-				++i;
-				break;
-			}
-
-			case PPT_PP_NUMBER:
-			{
-				ParsedNumberLiteral parsed = ParsePPNumberLiteral(token.data);
-				if (!parsed.ok)
-				{
-					output.emit_invalid(token.data);
-				}
-				else if (parsed.is_user_defined)
-				{
-					if (parsed.is_integer)
-						output.emit_user_defined_literal_integer(token.data, parsed.ud_suffix, parsed.prefix);
-					else
-						output.emit_user_defined_literal_floating(token.data, parsed.ud_suffix, parsed.prefix);
-				}
-				else if (parsed.is_integer)
-				{
-					EFundamentalType type = ChooseIntegerType(parsed.int_info);
-					if (type == FT_VOID)
-						output.emit_invalid(token.data);
-					else
-						EmitIntegerLiteral(output, token.data, type, parsed.int_info.value);
-				}
-				else
-				{
-					if (parsed.float_type == FT_FLOAT)
-					{
-						float x = PA2Decode_float(token.data);
-						output.emit_literal(token.data, FT_FLOAT, &x, sizeof(x));
-					}
-					else if (parsed.float_type == FT_LONG_DOUBLE)
-					{
-						long double x = PA2Decode_long_double(token.data);
-						output.emit_literal(token.data, FT_LONG_DOUBLE, &x, sizeof(x));
-					}
-					else
-					{
-						double x = PA2Decode_double(token.data);
-						output.emit_literal(token.data, FT_DOUBLE, &x, sizeof(x));
-					}
-				}
-				++i;
-				break;
-			}
-
-			case PPT_CHARACTER_LITERAL:
-			case PPT_USER_DEFINED_CHARACTER_LITERAL:
-			{
-				ParsedCharLiteral parsed = ParseCharacterLiteralToken(token);
-				if (!parsed.ok)
-				{
-					output.emit_invalid(token.data);
-				}
-				else if (parsed.user_defined)
-				{
-					switch (parsed.type)
-					{
-					case FT_CHAR:
-					{
-						char x = static_cast<char>(parsed.value);
-						output.emit_user_defined_literal_character(parsed.source, parsed.ud_suffix, FT_CHAR, &x, sizeof(x));
-						break;
-					}
-					case FT_INT:
-					{
-						int x = static_cast<int>(parsed.value);
-						output.emit_user_defined_literal_character(parsed.source, parsed.ud_suffix, FT_INT, &x, sizeof(x));
-						break;
-					}
-					case FT_CHAR16_T:
-					{
-						char16_t x = static_cast<char16_t>(parsed.value);
-						output.emit_user_defined_literal_character(parsed.source, parsed.ud_suffix, FT_CHAR16_T, &x, sizeof(x));
-						break;
-					}
-					case FT_CHAR32_T:
-					{
-						char32_t x = static_cast<char32_t>(parsed.value);
-						output.emit_user_defined_literal_character(parsed.source, parsed.ud_suffix, FT_CHAR32_T, &x, sizeof(x));
-						break;
-					}
-					case FT_WCHAR_T:
-					{
-						wchar_t x = static_cast<wchar_t>(parsed.value);
-						output.emit_user_defined_literal_character(parsed.source, parsed.ud_suffix, FT_WCHAR_T, &x, sizeof(x));
-						break;
-					}
-					default:
-						output.emit_invalid(token.data);
-						break;
-					}
-				}
-				else
-				{
-					switch (parsed.type)
-					{
-					case FT_CHAR:
-					{
-						char x = static_cast<char>(parsed.value);
-						output.emit_literal(parsed.source, FT_CHAR, &x, sizeof(x));
-						break;
-					}
-					case FT_INT:
-					{
-						int x = static_cast<int>(parsed.value);
-						output.emit_literal(parsed.source, FT_INT, &x, sizeof(x));
-						break;
-					}
-					case FT_CHAR16_T:
-					{
-						char16_t x = static_cast<char16_t>(parsed.value);
-						output.emit_literal(parsed.source, FT_CHAR16_T, &x, sizeof(x));
-						break;
-					}
-					case FT_CHAR32_T:
-					{
-						char32_t x = static_cast<char32_t>(parsed.value);
-						output.emit_literal(parsed.source, FT_CHAR32_T, &x, sizeof(x));
-						break;
-					}
-					case FT_WCHAR_T:
-					{
-						wchar_t x = static_cast<wchar_t>(parsed.value);
-						output.emit_literal(parsed.source, FT_WCHAR_T, &x, sizeof(x));
-						break;
-					}
-					default:
-						output.emit_invalid(token.data);
-						break;
-					}
-				}
-				++i;
-				break;
-			}
-
-			case PPT_STRING_LITERAL:
-			case PPT_USER_DEFINED_STRING_LITERAL:
-				EmitStringSequence(filtered, i, output);
-				break;
-
-			case PPT_HEADER_NAME:
-			case PPT_NON_WHITESPACE_CHAR:
-				output.emit_invalid(token.data);
-				++i;
-				break;
-
-			case PPT_WHITESPACE_SEQUENCE:
-			case PPT_NEW_LINE:
-				++i;
-				break;
-			}
-		}
+		RunPostTokenOnRawInput(oss.str(), cout, true);
 	}
 	catch (exception& e)
 	{
 		cerr << "ERROR: " << e.what() << endl;
 		return EXIT_FAILURE;
 	}
+
+	return EXIT_SUCCESS;
 }
+#endif
