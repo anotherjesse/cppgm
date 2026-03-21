@@ -26,8 +26,12 @@ assignment specification.
 - `dev/src/`: Shared compiler sources and headers
 - `paN/<tool>.cpp`: A committed symlink to `../dev/<tool>.cpp`
 
-Implement the assignment in `dev/` and `dev/src/`. Do not duplicate or fork
-the real implementation inside the assignment directories.
+Keep the real implementation in `dev/` and `dev/src/`. `dev/src/` is built as
+shared code, and headers placed there are on the include path via `-Isrc`, so
+they can be included directly as `#include "foo.h"`. The `paN/` directories
+hold assignment-specific wrappers, tests, and metadata. The `*-ref` binaries
+are included for testing and observation only and must not be used as part of
+the implementation.
 
 ## Build and Test Workflow
 
