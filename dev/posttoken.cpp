@@ -1790,6 +1790,7 @@ void ProcessOneToken(DebugPostTokenOutputStream& output, const PPToken& tok)
 	output.emit_invalid(tok.source);
 }
 
+#ifndef CPPGM_POSTTOKEN_NO_MAIN
 int main()
 {
 	try
@@ -1838,3 +1839,4 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+#endif
