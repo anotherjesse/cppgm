@@ -1206,6 +1206,678 @@ bool EmitFloatingLiteral(DebugPostTokenOutputStream& output, const string& sourc
 	return true;
 }
 
+enum EStringEncoding
+{
+	SE_ORDINARY,
+	SE_UTF8,
+	SE_UTF16,
+	SE_UTF32,
+	SE_WIDE
+};
+
+struct CharacterLiteralInfo
+{
+	bool valid = false;
+	bool user_defined = false;
+	string ud_suffix;
+	EFundamentalType type = FT_CHAR;
+	uint32_t value = 0;
+	size_t nbytes = 0;
+};
+
+struct StringLiteralPiece
+{
+	string source;
+	bool valid = false;
+	bool user_defined = false;
+	bool raw = false;
+	string ud_suffix;
+	EStringEncoding encoding = SE_ORDINARY;
+	vector<int> code_points;
+};
+
+bool IsValidUnicodeCodePoint(int value)
+{
+	return 0 <= value && value < 0x110000 && !(0xD800 <= value && value <= 0xDFFF);
+}
+
+bool ParseLiteralUdSuffix(const string& source, size_t start, string& suffix)
+{
+	if (start == source.size())
+	{
+		suffix.clear();
+		return true;
+	}
+	if (!ParseNumericUdSuffix(source, start, suffix))
+	{
+		return false;
+	}
+	return true;
+}
+
+bool DecodeLiteralEscape(const string& text, size_t& pos, int& value)
+{
+	if (text[pos] != '\\' || pos + 1 >= text.size())
+	{
+		return false;
+	}
+
+	char next = text[pos + 1];
+	switch (next)
+	{
+	case '\'':
+	case '"':
+	case '?':
+	case '\\':
+		value = static_cast<unsigned char>(next);
+		pos += 2;
+		return true;
+	case 'a':
+		value = '\a';
+		pos += 2;
+		return true;
+	case 'b':
+		value = '\b';
+		pos += 2;
+		return true;
+	case 'f':
+		value = '\f';
+		pos += 2;
+		return true;
+	case 'n':
+		value = '\n';
+		pos += 2;
+		return true;
+	case 'r':
+		value = '\r';
+		pos += 2;
+		return true;
+	case 't':
+		value = '\t';
+		pos += 2;
+		return true;
+	case 'v':
+		value = '\v';
+		pos += 2;
+		return true;
+	case 'x':
+	{
+		size_t at = pos + 2;
+		if (at >= text.size() || !IsHexDigitChar(text[at]))
+		{
+			return false;
+		}
+		unsigned value_acc = 0;
+		while (at < text.size() && IsHexDigitChar(text[at]))
+		{
+			value_acc = value_acc * 16 + HexCharToValue(text[at]);
+			++at;
+		}
+		value = static_cast<int>(value_acc);
+		pos = at;
+		return true;
+	}
+	default:
+		if (IsOctalDigitChar(next))
+		{
+			size_t at = pos + 1;
+			unsigned value_acc = 0;
+			int count = 0;
+			while (at < text.size() && count < 3 && IsOctalDigitChar(text[at]))
+			{
+				value_acc = value_acc * 8 + static_cast<unsigned>(text[at] - '0');
+				++at;
+				++count;
+			}
+			value = static_cast<int>(value_acc);
+			pos = at;
+			return true;
+		}
+		return false;
+	}
+}
+
+bool DecodeLiteralContent(const string& text, size_t start, size_t end, vector<int>& out)
+{
+	out.clear();
+	size_t pos = start;
+	while (pos < end)
+	{
+		if (text[pos] == '\\')
+		{
+			int value = 0;
+			if (!DecodeLiteralEscape(text, pos, value))
+			{
+				return false;
+			}
+			if (!IsValidUnicodeCodePoint(value))
+			{
+				return false;
+			}
+			out.push_back(value);
+			continue;
+		}
+
+		size_t next = pos;
+		int value = DecodeUtf8CodePoint(text, next);
+		if (!IsValidUnicodeCodePoint(value))
+		{
+			return false;
+		}
+		out.push_back(value);
+		pos = next;
+	}
+	return true;
+}
+
+bool DecodeRawContent(const string& text, size_t start, size_t end, vector<int>& out)
+{
+	out.clear();
+	size_t pos = start;
+	while (pos < end)
+	{
+		size_t next = pos;
+		int value = DecodeUtf8CodePoint(text, next);
+		if (!IsValidUnicodeCodePoint(value))
+		{
+			return false;
+		}
+		out.push_back(value);
+		pos = next;
+	}
+	return true;
+}
+
+bool EncodeCodePointsUtf8(const vector<int>& code_points, vector<char>& bytes)
+{
+	bytes.clear();
+	for (int cp : code_points)
+	{
+		string encoded = EncodeUtf8(cp);
+		bytes.insert(bytes.end(), encoded.begin(), encoded.end());
+	}
+	bytes.push_back(0);
+	return true;
+}
+
+bool EncodeCodePointsUtf16(const vector<int>& code_points, vector<char16_t>& units)
+{
+	units.clear();
+	for (int cp : code_points)
+	{
+		if (!IsValidUnicodeCodePoint(cp))
+		{
+			return false;
+		}
+		if (cp <= 0xFFFF)
+		{
+			units.push_back(static_cast<char16_t>(cp));
+		}
+		else
+		{
+			int adjusted = cp - 0x10000;
+			units.push_back(static_cast<char16_t>(0xD800 + (adjusted >> 10)));
+			units.push_back(static_cast<char16_t>(0xDC00 + (adjusted & 0x3FF)));
+		}
+	}
+	units.push_back(0);
+	return true;
+}
+
+bool EncodeCodePointsUtf32(const vector<int>& code_points, vector<char32_t>& units)
+{
+	units.clear();
+	for (int cp : code_points)
+	{
+		if (!IsValidUnicodeCodePoint(cp))
+		{
+			return false;
+		}
+		units.push_back(static_cast<char32_t>(cp));
+	}
+	units.push_back(0);
+	return true;
+}
+
+bool ParseCharacterLiteralSource(const string& source, CharacterLiteralInfo& info)
+{
+	info = CharacterLiteralInfo{};
+	size_t pos = 0;
+	EFundamentalType prefix_type = FT_CHAR;
+
+	if (source.size() >= 2 && source[0] == 'u' && source[1] == '\'')
+	{
+		prefix_type = FT_CHAR16_T;
+		pos = 1;
+	}
+	else if (source.size() >= 2 && source[0] == 'U' && source[1] == '\'')
+	{
+		prefix_type = FT_CHAR32_T;
+		pos = 1;
+	}
+	else if (source.size() >= 2 && source[0] == 'L' && source[1] == '\'')
+	{
+		prefix_type = FT_WCHAR_T;
+		pos = 1;
+	}
+
+	if (pos >= source.size() || source[pos] != '\'')
+	{
+		return false;
+	}
+
+	size_t content_start = pos + 1;
+	size_t at = content_start;
+	while (at < source.size())
+	{
+		if (source[at] == '\\')
+		{
+			if (at + 1 >= source.size())
+			{
+				return false;
+			}
+			at += 2;
+			if (at < source.size() && source[at - 1] == 'x')
+			{
+				while (at < source.size() && IsHexDigitChar(source[at]))
+				{
+					++at;
+				}
+			}
+			else if (at < source.size() && IsOctalDigitChar(source[at - 1]))
+			{
+				int count = 1;
+				while (at < source.size() && count < 3 && IsOctalDigitChar(source[at]))
+				{
+					++at;
+					++count;
+				}
+			}
+			continue;
+		}
+		if (source[at] == '\'')
+		{
+			break;
+		}
+		size_t next = at;
+		DecodeUtf8CodePoint(source, next);
+		at = next;
+	}
+
+	if (at >= source.size() || source[at] != '\'')
+	{
+		return false;
+	}
+
+	string ud_suffix;
+	if (!ParseLiteralUdSuffix(source, at + 1, ud_suffix))
+	{
+		return false;
+	}
+
+	vector<int> code_points;
+	if (!DecodeLiteralContent(source, content_start, at, code_points) || code_points.size() != 1)
+	{
+		return false;
+	}
+
+	int cp = code_points[0];
+	if (!IsValidUnicodeCodePoint(cp))
+	{
+		return false;
+	}
+
+	info.user_defined = !ud_suffix.empty();
+	info.ud_suffix = ud_suffix;
+	info.value = static_cast<uint32_t>(cp);
+
+	if (prefix_type == FT_CHAR)
+	{
+		if (cp <= 0x7F)
+		{
+			info.type = FT_CHAR;
+			info.nbytes = sizeof(char);
+		}
+		else
+		{
+			info.type = FT_INT;
+			info.nbytes = sizeof(int);
+		}
+	}
+	else if (prefix_type == FT_CHAR16_T)
+	{
+		if (cp > 0xFFFF)
+		{
+			return false;
+		}
+		info.type = FT_CHAR16_T;
+		info.nbytes = sizeof(char16_t);
+	}
+	else
+	{
+		info.type = prefix_type;
+		info.nbytes = sizeof(char32_t);
+	}
+
+	info.valid = true;
+	return true;
+}
+
+bool EmitCharacterLiteral(DebugPostTokenOutputStream& output, const string& source)
+{
+	CharacterLiteralInfo info;
+	if (!ParseCharacterLiteralSource(source, info))
+	{
+		return false;
+	}
+
+	if (info.type == FT_CHAR)
+	{
+		char value = static_cast<char>(info.value);
+		if (info.user_defined)
+		{
+			output.emit_user_defined_literal_character(source, info.ud_suffix, info.type, &value, sizeof(value));
+		}
+		else
+		{
+			output.emit_literal(source, info.type, &value, sizeof(value));
+		}
+		return true;
+	}
+
+	if (info.type == FT_INT)
+	{
+		int value = static_cast<int>(info.value);
+		if (info.user_defined)
+		{
+			output.emit_user_defined_literal_character(source, info.ud_suffix, info.type, &value, sizeof(value));
+		}
+		else
+		{
+			output.emit_literal(source, info.type, &value, sizeof(value));
+		}
+		return true;
+	}
+
+	if (info.type == FT_CHAR16_T)
+	{
+		char16_t value = static_cast<char16_t>(info.value);
+		if (info.user_defined)
+		{
+			output.emit_user_defined_literal_character(source, info.ud_suffix, info.type, &value, sizeof(value));
+		}
+		else
+		{
+			output.emit_literal(source, info.type, &value, sizeof(value));
+		}
+		return true;
+	}
+
+	char32_t value = static_cast<char32_t>(info.value);
+	if (info.user_defined)
+	{
+		output.emit_user_defined_literal_character(source, info.ud_suffix, info.type, &value, sizeof(value));
+	}
+	else
+	{
+		output.emit_literal(source, info.type, &value, sizeof(value));
+	}
+	return true;
+}
+
+bool ParseStringLiteralPiece(const string& source, StringLiteralPiece& piece)
+{
+	piece = StringLiteralPiece{};
+	piece.source = source;
+
+	size_t pos = 0;
+	if (source.compare(0, 2, "u8") == 0)
+	{
+		piece.encoding = SE_UTF8;
+		pos = 2;
+	}
+	else if (!source.empty() && source[0] == 'u')
+	{
+		piece.encoding = SE_UTF16;
+		pos = 1;
+	}
+	else if (!source.empty() && source[0] == 'U')
+	{
+		piece.encoding = SE_UTF32;
+		pos = 1;
+	}
+	else if (!source.empty() && source[0] == 'L')
+	{
+		piece.encoding = SE_WIDE;
+		pos = 1;
+	}
+
+	if (pos < source.size() && source[pos] == 'R')
+	{
+		piece.raw = true;
+		++pos;
+	}
+
+	if (pos >= source.size() || source[pos] != '"')
+	{
+		return false;
+	}
+
+	if (piece.raw)
+	{
+		size_t delim_start = pos + 1;
+		size_t open = source.find('(', delim_start);
+		if (open == string::npos)
+		{
+			return false;
+		}
+		string delimiter = source.substr(delim_start, open - delim_start);
+		string terminator = ")" + delimiter + "\"";
+		size_t close = source.rfind(terminator);
+		if (close == string::npos || close < open + 1)
+		{
+			return false;
+		}
+		if (!ParseLiteralUdSuffix(source, close + terminator.size(), piece.ud_suffix))
+		{
+			return false;
+		}
+		if (!DecodeRawContent(source, open + 1, close, piece.code_points))
+		{
+			return false;
+		}
+	}
+	else
+	{
+		size_t at = pos + 1;
+		while (at < source.size())
+		{
+			if (source[at] == '\\')
+			{
+				if (at + 1 >= source.size())
+				{
+					return false;
+				}
+				at += 2;
+				if (at < source.size() && source[at - 1] == 'x')
+				{
+					while (at < source.size() && IsHexDigitChar(source[at]))
+					{
+						++at;
+					}
+				}
+				else if (at < source.size() && IsOctalDigitChar(source[at - 1]))
+				{
+					int count = 1;
+					while (at < source.size() && count < 3 && IsOctalDigitChar(source[at]))
+					{
+						++at;
+						++count;
+					}
+				}
+				continue;
+			}
+			if (source[at] == '"')
+			{
+				break;
+			}
+			size_t next = at;
+			DecodeUtf8CodePoint(source, next);
+			at = next;
+		}
+		if (at >= source.size() || source[at] != '"')
+		{
+			return false;
+		}
+		if (!ParseLiteralUdSuffix(source, at + 1, piece.ud_suffix))
+		{
+			return false;
+		}
+		if (!DecodeLiteralContent(source, pos + 1, at, piece.code_points))
+		{
+			return false;
+		}
+	}
+
+	piece.user_defined = !piece.ud_suffix.empty();
+	piece.valid = true;
+	return true;
+}
+
+void EmitInvalidStringSequence(DebugPostTokenOutputStream& output, const vector<PPToken>& tokens, size_t begin, size_t end)
+{
+	string source;
+	for (size_t i = begin; i < end; ++i)
+	{
+		if (!source.empty())
+		{
+			source += ' ';
+		}
+		source += tokens[i].source;
+	}
+	output.emit_invalid(source);
+}
+
+bool EmitStringSequence(DebugPostTokenOutputStream& output, const vector<PPToken>& tokens, size_t begin, size_t end)
+{
+	vector<StringLiteralPiece> pieces;
+	string source;
+	for (size_t i = begin; i < end; ++i)
+	{
+		if (!source.empty())
+		{
+			source += ' ';
+		}
+		source += tokens[i].source;
+	}
+
+	for (size_t i = begin; i < end; ++i)
+	{
+		StringLiteralPiece piece;
+		if (!ParseStringLiteralPiece(tokens[i].source, piece))
+		{
+			output.emit_invalid(source);
+			return true;
+		}
+		pieces.push_back(piece);
+	}
+
+	EStringEncoding final_encoding = SE_ORDINARY;
+	bool saw_prefixed = false;
+	string ud_suffix;
+	for (const StringLiteralPiece& piece : pieces)
+	{
+		if (piece.encoding != SE_ORDINARY)
+		{
+			if (!saw_prefixed)
+			{
+				final_encoding = piece.encoding;
+				saw_prefixed = true;
+			}
+			else if (final_encoding != piece.encoding)
+			{
+				output.emit_invalid(source);
+				return true;
+			}
+		}
+
+		if (piece.user_defined)
+		{
+			if (ud_suffix.empty())
+			{
+				ud_suffix = piece.ud_suffix;
+			}
+			else if (ud_suffix != piece.ud_suffix)
+			{
+				output.emit_invalid(source);
+				return true;
+			}
+		}
+	}
+
+	vector<int> code_points;
+	for (const StringLiteralPiece& piece : pieces)
+	{
+		code_points.insert(code_points.end(), piece.code_points.begin(), piece.code_points.end());
+	}
+
+	if (final_encoding == SE_ORDINARY || final_encoding == SE_UTF8)
+	{
+		vector<char> bytes;
+		if (!EncodeCodePointsUtf8(code_points, bytes))
+		{
+			output.emit_invalid(source);
+			return true;
+		}
+		if (ud_suffix.empty())
+		{
+			output.emit_literal_array(source, bytes.size(), FT_CHAR, bytes.data(), bytes.size());
+		}
+		else
+		{
+			output.emit_user_defined_literal_string_array(source, ud_suffix, bytes.size(), FT_CHAR, bytes.data(), bytes.size());
+		}
+		return true;
+	}
+
+	if (final_encoding == SE_UTF16)
+	{
+		vector<char16_t> units;
+		if (!EncodeCodePointsUtf16(code_points, units))
+		{
+			output.emit_invalid(source);
+			return true;
+		}
+		if (ud_suffix.empty())
+		{
+			output.emit_literal_array(source, units.size(), FT_CHAR16_T, units.data(), units.size() * sizeof(char16_t));
+		}
+		else
+		{
+			output.emit_user_defined_literal_string_array(source, ud_suffix, units.size(), FT_CHAR16_T, units.data(), units.size() * sizeof(char16_t));
+		}
+		return true;
+	}
+
+	vector<char32_t> units;
+	if (!EncodeCodePointsUtf32(code_points, units))
+	{
+		output.emit_invalid(source);
+		return true;
+	}
+
+	EFundamentalType type = final_encoding == SE_WIDE ? FT_WCHAR_T : FT_CHAR32_T;
+	if (ud_suffix.empty())
+	{
+		output.emit_literal_array(source, units.size(), type, units.data(), units.size() * sizeof(char32_t));
+	}
+	else
+	{
+		output.emit_user_defined_literal_string_array(source, ud_suffix, units.size(), type, units.data(), units.size() * sizeof(char32_t));
+	}
+	return true;
+}
+
 int main()
 {
 	try
@@ -1223,15 +1895,22 @@ int main()
 		}
 		tokenizer.process(EndOfFile);
 
-		DebugPostTokenOutputStream output;
+		vector<PPToken> tokens;
 		for (const PPToken& token : pp_output.tokens)
 		{
+			if (token.kind == PPT_WHITESPACE || token.kind == PPT_NEWLINE || token.kind == PPT_EOF)
+			{
+				continue;
+			}
+			tokens.push_back(token);
+		}
+
+		DebugPostTokenOutputStream output;
+		for (size_t i = 0; i < tokens.size(); ++i)
+		{
+			const PPToken& token = tokens[i];
 			switch (token.kind)
 			{
-			case PPT_WHITESPACE:
-			case PPT_NEWLINE:
-			case PPT_EOF:
-				break;
 			case PPT_HEADER_NAME:
 			case PPT_NON_WHITESPACE_CHARACTER:
 				output.emit_invalid(token.source);
@@ -1264,9 +1943,28 @@ int main()
 				break;
 			case PPT_CHARACTER_LITERAL:
 			case PPT_USER_DEFINED_CHARACTER_LITERAL:
+				if (!EmitCharacterLiteral(output, token.source))
+				{
+					output.emit_invalid(token.source);
+				}
+				break;
 			case PPT_STRING_LITERAL:
 			case PPT_USER_DEFINED_STRING_LITERAL:
-				output.emit_invalid(token.source);
+			{
+				size_t end = i + 1;
+				while (end < tokens.size() &&
+					(tokens[end].kind == PPT_STRING_LITERAL ||
+					 tokens[end].kind == PPT_USER_DEFINED_STRING_LITERAL))
+				{
+					++end;
+				}
+				EmitStringSequence(output, tokens, i, end);
+				i = end - 1;
+				break;
+			}
+			case PPT_WHITESPACE:
+			case PPT_NEWLINE:
+			case PPT_EOF:
 				break;
 			}
 		}
