@@ -92,12 +92,70 @@ vector<PPToken> RetokenizeFragment(const string& text)
 	return out;
 }
 
-vector<PPToken> Substitute(const MacroDef& def, const vector<vector<PPToken> >& args, map<string, MacroDef>& macros, set<string> active)
+string StringizeTokens(const vector<PPToken>& tokens)
+{
+	string body;
+	bool need_space = false;
+	for (size_t i = 0; i < tokens.size(); ++i)
+	{
+		if (tokens[i].kind == PP_WS)
+		{
+			need_space = !body.empty();
+			continue;
+		}
+		if (need_space)
+		{
+			body.push_back(' ');
+			need_space = false;
+		}
+		for (size_t j = 0; j < tokens[i].data.size(); ++j)
+		{
+			char c = tokens[i].data[j];
+			if (c == '\\' || c == '"')
+			{
+				body.push_back('\\');
+			}
+			body.push_back(c);
+		}
+	}
+	return "\"" + body + "\"";
+}
+
+vector<PPToken> Substitute(const string& macro_name, const MacroDef& def, const vector<vector<PPToken> >& args, map<string, MacroDef>& macros, set<string> active)
 {
 	vector<PPToken> expanded;
+	set<string> substitution_active = active;
+	substitution_active.erase(macro_name);
 	for (size_t i = 0; i < def.replacement.size(); ++i)
 	{
 		const PPToken& tok = def.replacement[i];
+		bool handled = false;
+		if (tok.kind == PP_OP && tok.data == "#")
+		{
+			size_t next = i + 1;
+			while (next < def.replacement.size() && def.replacement[next].kind == PP_WS) ++next;
+			if (next < def.replacement.size() && def.replacement[next].kind == PP_IDENTIFIER)
+			{
+				for (size_t p = 0; p < def.params.size(); ++p)
+				{
+					if (def.params[p] == def.replacement[next].data)
+					{
+						expanded.push_back({PP_STRING, StringizeTokens(args[p])});
+						i = next;
+						handled = true;
+						break;
+					}
+				}
+				if (!handled && def.variadic && def.replacement[next].data == "__VA_ARGS__")
+				{
+					size_t var_index = def.params.size();
+					expanded.push_back({PP_STRING, StringizeTokens(var_index < args.size() ? args[var_index] : vector<PPToken>())});
+					i = next;
+					handled = true;
+				}
+			}
+		}
+		if (handled) continue;
 		bool adjacent_hashhash =
 			(i > 0 && def.replacement[i - 1].kind == PP_OP && def.replacement[i - 1].data == "##") ||
 			(i + 1 < def.replacement.size() && def.replacement[i + 1].kind == PP_OP && def.replacement[i + 1].data == "##");
@@ -108,7 +166,7 @@ vector<PPToken> Substitute(const MacroDef& def, const vector<vector<PPToken> >& 
 			{
 				if (tok.data == def.params[p])
 				{
-					vector<PPToken> repl = adjacent_hashhash ? args[p] : ExpandTokens(args[p], macros, active);
+					vector<PPToken> repl = adjacent_hashhash ? args[p] : ExpandTokens(args[p], macros, substitution_active);
 					expanded.insert(expanded.end(), repl.begin(), repl.end());
 					replaced = true;
 					break;
@@ -119,7 +177,7 @@ vector<PPToken> Substitute(const MacroDef& def, const vector<vector<PPToken> >& 
 				size_t var_index = def.params.size();
 				if (var_index < args.size())
 				{
-					vector<PPToken> repl = adjacent_hashhash ? args[var_index] : ExpandTokens(args[var_index], macros, active);
+					vector<PPToken> repl = adjacent_hashhash ? args[var_index] : ExpandTokens(args[var_index], macros, substitution_active);
 					expanded.insert(expanded.end(), repl.begin(), repl.end());
 				}
 				replaced = true;
@@ -226,7 +284,7 @@ vector<PPToken> ExpandTokens(const vector<PPToken>& tokens, map<string, MacroDef
 
 		set<string> next_active = active;
 		next_active.insert(tok.data);
-		vector<PPToken> repl = Substitute(def, args, macros, next_active);
+		vector<PPToken> repl = Substitute(tok.data, def, args, macros, next_active);
 		repl = ExpandTokens(repl, macros, next_active);
 		out.insert(out.end(), repl.begin(), repl.end());
 		i = j - 1;
@@ -438,21 +496,26 @@ int main()
 						}
 						if (def.replacement[r].kind == PP_OP && def.replacement[r].data == "#")
 						{
-							bool ok = def.function_like &&
-								r + 1 < def.replacement.size() &&
-								def.replacement[r + 1].kind == PP_IDENTIFIER;
+							if (!def.function_like)
+							{
+								continue;
+							}
+							size_t next = r + 1;
+							while (next < def.replacement.size() && def.replacement[next].kind == PP_WS) ++next;
+							bool ok = next < def.replacement.size() &&
+								def.replacement[next].kind == PP_IDENTIFIER;
 							if (ok)
 							{
 								ok = false;
 								for (size_t q = 0; q < def.params.size(); ++q)
 								{
-									if (def.params[q] == def.replacement[r + 1].data)
+									if (def.params[q] == def.replacement[next].data)
 									{
 										ok = true;
 										break;
 									}
 								}
-								if (def.variadic && def.replacement[r + 1].data == "__VA_ARGS__")
+								if (def.variadic && def.replacement[next].data == "__VA_ARGS__")
 								{
 									ok = true;
 								}
