@@ -182,6 +182,10 @@ struct ProgramImageBuilder
 	vector<char> image;
 	map<string, uint64_t> entity_offsets;
 	map<string, TypePtr> entity_types;
+	vector<InitRecord> emitted_records;
+	map<string, size_t> emitted_index;
+	map<size_t, uint64_t> temporary_offsets;
+	vector<uint64_t> record_offsets;
 
 	ProgramImageBuilder()
 	{
@@ -289,20 +293,42 @@ struct ProgramImageBuilder
 		throw runtime_error("bad string literal");
 	}
 
-	vector<char> MaterializeValue(const InitRecord& rec)
+	uint64_t ResolveReferenceTarget(size_t index, set<size_t>& active)
+	{
+		if (active.count(index) != 0) throw runtime_error("reference cycle");
+		active.insert(index);
+		const InitRecord& rec = emitted_records[index];
+		if (rec.initializer.is_null_pointer) return 0;
+		if (!rec.initializer.entity_name.empty())
+		{
+			map<string, size_t>::const_iterator it_idx = emitted_index.find(rec.initializer.entity_name);
+			if (it_idx != emitted_index.end())
+			{
+				const InitRecord& target_rec = emitted_records[it_idx->second];
+				if (target_rec.type->kind == Type::LVALUE_REF || target_rec.type->kind == Type::RVALUE_REF)
+				{
+					return ResolveReferenceTarget(it_idx->second, active);
+				}
+				return record_offsets[it_idx->second];
+			}
+			map<string, uint64_t>::const_iterator it = entity_offsets.find(rec.initializer.entity_name);
+			if (it == entity_offsets.end()) throw runtime_error("unresolved symbol");
+			return it->second;
+		}
+		map<size_t, uint64_t>::const_iterator temp_it = temporary_offsets.find(index);
+		if (temp_it != temporary_offsets.end()) return temp_it->second;
+		return 0;
+	}
+
+	vector<char> MaterializeValue(const InitRecord& rec, size_t emitted_index_value)
 	{
 		LayoutInfo layout = GetLayout(rec.type);
 		vector<char> out(layout.size, '\0');
 		if (!rec.has_initializer) return out;
 		if (rec.type->kind == Type::POINTER || rec.type->kind == Type::LVALUE_REF || rec.type->kind == Type::RVALUE_REF)
 		{
-			if (rec.initializer.is_null_pointer) return out;
-			if (!rec.initializer.entity_name.empty())
-			{
-				map<string, uint64_t>::const_iterator it = entity_offsets.find(rec.initializer.entity_name);
-				if (it == entity_offsets.end()) throw runtime_error("unresolved symbol");
-				return EncodeUnsigned(it->second, 8);
-			}
+			set<size_t> active;
+			return EncodeUnsigned(ResolveReferenceTarget(emitted_index_value, active), 8);
 		}
 		if (rec.type->kind == Type::ARRAY && rec.initializer.is_string_literal)
 		{
@@ -379,13 +405,20 @@ struct ProgramImageBuilder
 			}
 			emitted.push_back(rec);
 		}
+		emitted_records = emitted;
+		record_offsets.assign(emitted_records.size(), 0);
+		for (size_t i = 0; i < emitted_records.size(); ++i) emitted_index[emitted_records[i].qualified_name] = i;
 
-		for (size_t i = 0; i < emitted.size(); ++i)
+		for (size_t i = 0; i < emitted_records.size(); ++i)
 		{
-			const InitRecord& rec = emitted[i];
+			const InitRecord& rec = emitted_records[i];
 			LayoutInfo layout = GetLayout(rec.type);
 			AppendPadding(image, layout.align);
-			entity_offsets[rec.qualified_name] = image.size();
+			record_offsets[i] = image.size();
+			if (rec.linkage == LK_EXTERNAL && entity_offsets.count(rec.qualified_name) == 0)
+			{
+				entity_offsets[rec.qualified_name] = image.size();
+			}
 			if (rec.is_function)
 			{
 				image.push_back('f');
@@ -393,10 +426,41 @@ struct ProgramImageBuilder
 				image.push_back('n');
 				image.push_back('\0');
 			}
-			else
+				else
+				{
+					vector<char> bytes(GetLayout(rec.type).size, '\0');
+					image.insert(image.end(), bytes.begin(), bytes.end());
+				}
+		}
+
+		for (size_t i = 0; i < emitted_records.size(); ++i)
+		{
+			const InitRecord& rec = emitted_records[i];
+			if ((rec.type->kind == Type::LVALUE_REF || rec.type->kind == Type::RVALUE_REF) &&
+				rec.has_initializer && rec.initializer.entity_name.empty() && !rec.initializer.is_null_pointer)
 			{
-				vector<char> bytes = MaterializeValue(rec);
+				LayoutInfo layout = GetLayout(rec.type->inner);
+				AppendPadding(image, layout.align);
+				temporary_offsets[i] = image.size();
+				vector<char> bytes(layout.size, '\0');
+				if (!rec.initializer.bytes.empty())
+				{
+					vector<char> src = rec.initializer.bytes;
+					if (src.size() > bytes.size()) src.resize(bytes.size());
+					copy(src.begin(), src.end(), bytes.begin());
+				}
 				image.insert(image.end(), bytes.begin(), bytes.end());
+			}
+		}
+
+		for (size_t i = 0; i < emitted_records.size(); ++i)
+		{
+			const InitRecord& rec = emitted_records[i];
+			if (!rec.is_function)
+			{
+				vector<char> bytes = MaterializeValue(rec, i);
+				uint64_t off = record_offsets[i];
+				for (size_t j = 0; j < bytes.size(); ++j) image[off + j] = bytes[j];
 			}
 		}
 
@@ -417,6 +481,7 @@ struct InitParser : Parser
 	vector<InitRecord> records;
 	vector<string> errors;
 	vector<string> string_literals;
+	map<string, ExprValue> constant_values;
 	size_t next_order;
 
 	InitParser(const vector<Token>& t) : Parser(t), next_order(0) {}
@@ -595,6 +660,8 @@ struct InitParser : Parser
 		ExprValue out;
 		Namespace* target_ns = TargetNamespaceForName(current, ref);
 		string qn = QualifiedEntityName(target_ns, ref.name);
+		map<string, ExprValue>::const_iterator cit = constant_values.find(qn);
+		if (cit != constant_values.end()) return cit->second;
 		out.entity_name = qn;
 		out.is_lvalue = true;
 		map<string, size_t>::const_iterator vit = target_ns->variable_index.find(ref.name);
@@ -693,6 +760,18 @@ struct InitParser : Parser
 			target->typedefs[decl.name.name] = type;
 			return;
 		}
+		if (rec.has_initializer)
+		{
+			bool cache_constant = false;
+			if (spec.is_constexpr) cache_constant = true;
+			else if (IsConstType(type) && rec.initializer.is_constant) cache_constant = true;
+			if (cache_constant)
+			{
+				ExprValue stored = rec.initializer;
+				stored.is_constant = true;
+				constant_values[qn] = stored;
+			}
+		}
 
 		if (rec.is_function)
 		{
@@ -701,11 +780,12 @@ struct InitParser : Parser
 		else
 		{
 			AddVariable(target, decl.name.name, type);
-			if ((type->kind == Type::LVALUE_REF || type->kind == Type::RVALUE_REF) && !rec.has_initializer)
+			bool needs_definition_init_check = !rec.storage_extern;
+			if (needs_definition_init_check && (type->kind == Type::LVALUE_REF || type->kind == Type::RVALUE_REF) && !rec.has_initializer)
 			{
 				errors.push_back("type cannot be default initialized");
 			}
-			else if (TypeRequiresInitializer(type) && !rec.has_initializer)
+			else if (needs_definition_init_check && TypeRequiresInitializer(type) && !rec.has_initializer)
 			{
 				errors.push_back("type cannot be default initialized");
 			}
@@ -728,12 +808,17 @@ struct InitParser : Parser
 		while (true)
 		{
 			DeclaratorInfo decl = ParseDeclarator(current);
+			Namespace* post_qualified_lookup = current;
+			if (decl.has_name && (decl.name.global || !decl.name.qualifiers.empty()))
+			{
+				post_qualified_lookup = TargetNamespaceForName(current, decl.name);
+			}
 			ExprValue init;
 			bool has_init = false;
 			bool defined = false;
 			if (AcceptTerm("OP_ASS"))
 			{
-				init = ParseExpressionValue(current);
+				init = ParseExpressionValue(post_qualified_lookup);
 				has_init = true;
 			}
 			else if (Peek().term == "OP_LBRACE")
@@ -761,7 +846,13 @@ struct InitParser : Parser
 			unnamed = false;
 			name = ExpectIdentifier();
 		}
-		if (!unnamed && current->namespace_aliases.count(name) != 0)
+		if (!unnamed &&
+			(current->namespace_aliases.count(name) != 0 ||
+			 current->typedefs.count(name) != 0 ||
+			 current->using_types.count(name) != 0 ||
+			 current->variable_index.count(name) != 0 ||
+			 current->function_index.count(name) != 0 ||
+			 current->using_member_names.count(name) != 0))
 		{
 			errors.push_back(name + " already exists");
 		}
@@ -824,12 +915,14 @@ struct InitParser : Parser
 		map<string, size_t>::const_iterator vit = base->variable_index.find(name);
 		if (vit != base->variable_index.end())
 		{
+			current->using_member_names.insert(name);
 			ExpectTerm("OP_SEMICOLON");
 			return;
 		}
 		map<string, size_t>::const_iterator fit = base->function_index.find(name);
 		if (fit != base->function_index.end())
 		{
+			current->using_member_names.insert(name);
 			ExpectTerm("OP_SEMICOLON");
 			return;
 		}
@@ -852,7 +945,21 @@ struct InitParser : Parser
 		++pos;
 		ExpectTerm("OP_RPAREN");
 		ExpectTerm("OP_SEMICOLON");
-		if (!expr.is_constant || expr.bytes.empty() || expr.bytes[0] == 0) errors.push_back("static assertion failed");
+		if (!expr.is_constant)
+		{
+			errors.push_back("static_assert on non-constant expression");
+			return;
+		}
+		bool truthy = false;
+		if (!expr.entity_name.empty()) truthy = true;
+		else if (!expr.bytes.empty())
+		{
+			for (size_t i = 0; i < expr.bytes.size(); ++i)
+			{
+				if (expr.bytes[i] != 0) truthy = true;
+			}
+		}
+		if (!truthy) errors.push_back("static assertion failed");
 	}
 
 	void ParseDeclarationPA8(Namespace* current)

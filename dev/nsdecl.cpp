@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -257,6 +258,7 @@ struct Namespace
 	Namespace* unnamed_child;
 	map<string, Namespace*> namespace_aliases;
 	map<string, TypePtr> using_types;
+	set<string> using_member_names;
 	vector<Namespace*> using_directives;
 
 	Namespace() : unnamed(false), is_inline(false), parent(NULL), unnamed_child(NULL) {}
