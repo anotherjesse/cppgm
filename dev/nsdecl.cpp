@@ -1443,6 +1443,7 @@ void PA7AnalyzeTranslationUnit(const string& srcfile, ostream& out, const string
 	out << "end translation unit\n";
 }
 
+#ifndef CPPGM_NSDECL_NO_MAIN
 int main(int argc, char** argv)
 {
 	try
@@ -1478,3 +1479,4 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 }
+#endif
