@@ -1274,7 +1274,11 @@ void ProcessTranslationUnit(ofstream& out, const string& srcfile)
 	out << "end translation unit" << endl;
 }
 
-int main(int argc, char** argv)
+#ifndef CPPGM_NSDECL_MAIN_NAME
+#define CPPGM_NSDECL_MAIN_NAME main
+#endif
+
+int CPPGM_NSDECL_MAIN_NAME(int argc, char** argv)
 {
 	try
 	{
