@@ -19,6 +19,7 @@ namespace
 	{
 		Kind kind;
 		string data;
+		size_t line = 1;
 		bool space_before = false;
 		unordered_set<string> hide;
 		bool placemarker = false;
@@ -64,6 +65,7 @@ namespace
 		Token out;
 		out.kind = t.kind;
 		out.data = t.data;
+		out.line = t.line;
 		out.macro_op = false;
 		return out;
 	}
@@ -688,6 +690,7 @@ namespace
 	}
 }
 
+#ifndef CPPGM_MACRO_LIBRARY
 int main()
 {
 	try
@@ -785,3 +788,4 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+#endif

@@ -652,23 +652,34 @@ namespace
 	{
 		Kind kind;
 		string data;
+		size_t line = 1;
 	};
 
 	struct Sink : IPPTokenStream
 	{
 		vector<Tok> toks;
-		void emit_whitespace_sequence() { toks.push_back({Kind::WS, string()}); }
-		void emit_new_line() { toks.push_back({Kind::NL, string()}); }
-		void emit_header_name(const string& data) { toks.push_back({Kind::HEADER, data}); }
-		void emit_identifier(const string& data) { toks.push_back({Kind::IDENT, data}); }
-		void emit_pp_number(const string& data) { toks.push_back({Kind::PPNUM, data}); }
-		void emit_character_literal(const string& data) { toks.push_back({Kind::CHAR, data}); }
-		void emit_user_defined_character_literal(const string& data) { toks.push_back({Kind::UCHAR, data}); }
-		void emit_string_literal(const string& data) { toks.push_back({Kind::STR, data}); }
-		void emit_user_defined_string_literal(const string& data) { toks.push_back({Kind::USTR, data}); }
-		void emit_preprocessing_op_or_punc(const string& data) { toks.push_back({Kind::PUNC, data}); }
-		void emit_non_whitespace_char(const string& data) { toks.push_back({Kind::NONWS, data}); }
-		void emit_eof() { toks.push_back({Kind::EOFK, string()}); }
+		size_t pending_line = 1;
+		Tok make_tok(Kind kind, const string& data)
+		{
+			Tok t;
+			t.kind = kind;
+			t.data = data;
+			t.line = pending_line;
+			return t;
+		}
+		void emit_line_number(size_t line) { pending_line = line; }
+		void emit_whitespace_sequence() { toks.push_back(make_tok(Kind::WS, string())); }
+		void emit_new_line() { toks.push_back(make_tok(Kind::NL, string())); }
+		void emit_header_name(const string& data) { toks.push_back(make_tok(Kind::HEADER, data)); }
+		void emit_identifier(const string& data) { toks.push_back(make_tok(Kind::IDENT, data)); }
+		void emit_pp_number(const string& data) { toks.push_back(make_tok(Kind::PPNUM, data)); }
+		void emit_character_literal(const string& data) { toks.push_back(make_tok(Kind::CHAR, data)); }
+		void emit_user_defined_character_literal(const string& data) { toks.push_back(make_tok(Kind::UCHAR, data)); }
+		void emit_string_literal(const string& data) { toks.push_back(make_tok(Kind::STR, data)); }
+		void emit_user_defined_string_literal(const string& data) { toks.push_back(make_tok(Kind::USTR, data)); }
+		void emit_preprocessing_op_or_punc(const string& data) { toks.push_back(make_tok(Kind::PUNC, data)); }
+		void emit_non_whitespace_char(const string& data) { toks.push_back(make_tok(Kind::NONWS, data)); }
+		void emit_eof() { toks.push_back(make_tok(Kind::EOFK, string())); }
 	};
 
 	enum class Enc { Ordinary, U8, U16, U32, Wide };

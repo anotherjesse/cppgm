@@ -564,6 +564,7 @@ struct PPTokenizer
 {
 	IPPTokenStream& output;
 	vector<unsigned char> raw_bytes;
+	size_t current_line = 1;
 
 	PPTokenizer(IPPTokenStream& output)
 		: output(output)
@@ -574,6 +575,7 @@ struct PPTokenizer
 		if (c == EndOfFile)
 		{
 			run();
+			output.emit_line_number(current_line);
 			output.emit_eof();
 			return;
 		}
@@ -582,6 +584,7 @@ struct PPTokenizer
 
 	void run()
 	{
+		current_line = 1;
 		vector<uint32_t> cps = decode_utf8_bytes(raw_bytes);
 		cps = replace_trigraphs(cps);
 		cps = splice_lines(cps);
@@ -597,8 +600,10 @@ struct PPTokenizer
 		{
 			if (cps[i] == '\n')
 			{
+				output.emit_line_number(current_line);
 				output.emit_new_line();
 				++i;
+				++current_line;
 				at_line_start = true;
 				after_hash = false;
 				expect_header_name = false;
@@ -610,6 +615,7 @@ struct PPTokenizer
 				i += 2;
 				while (i < cps.size() && cps[i] != '\n')
 					++i;
+				output.emit_line_number(current_line);
 				output.emit_whitespace_sequence();
 				continue;
 			}
@@ -626,6 +632,8 @@ struct PPTokenizer
 						closed = true;
 						break;
 					}
+					if (cps[i] == '\n')
+						++current_line;
 					++i;
 				}
 				if (!closed)
@@ -644,6 +652,8 @@ struct PPTokenizer
 							closed = true;
 							break;
 						}
+						if (cps[i] == '\n')
+							++current_line;
 						++i;
 					}
 					if (!closed)
@@ -651,6 +661,7 @@ struct PPTokenizer
 					while (i < cps.size() && is_whitespace_no_newline(cps[i]))
 						++i;
 				}
+				output.emit_line_number(current_line);
 				output.emit_whitespace_sequence();
 				continue;
 			}
@@ -684,6 +695,8 @@ struct PPTokenizer
 							closed = true;
 							break;
 						}
+						if (cps[i] == '\n')
+							++current_line;
 						++i;
 					}
 					if (!closed)
@@ -698,6 +711,7 @@ struct PPTokenizer
 				}
 				if (consumed)
 				{
+					output.emit_line_number(current_line);
 					output.emit_whitespace_sequence();
 					continue;
 				}
@@ -742,6 +756,7 @@ struct PPTokenizer
 				}
 				if (ok)
 				{
+					output.emit_line_number(current_line);
 					output.emit_header_name(utf8_encode_slice(cps, start, i));
 					expect_header_name = false;
 					at_line_start = false;
@@ -761,6 +776,7 @@ struct PPTokenizer
 				string word = utf8_encode_slice(cps, start, i);
 				if (word == "include")
 				{
+					output.emit_line_number(current_line);
 					output.emit_identifier(word);
 					expect_header_name = true;
 					after_hash = false;
@@ -797,6 +813,7 @@ struct PPTokenizer
 					}
 					break;
 				}
+				output.emit_line_number(current_line);
 				output.emit_pp_number(utf8_encode_slice(cps, start, i));
 				at_line_start = false;
 				continue;
@@ -815,6 +832,7 @@ struct PPTokenizer
 					after_hash = at_line_start;
 				else
 					after_hash = false;
+				output.emit_line_number(current_line);
 				output.emit_preprocessing_op_or_punc(punct);
 				i += punct.size();
 				at_line_start = false;
@@ -823,6 +841,7 @@ struct PPTokenizer
 
 			if (cps[i] == 'o' && i + 1 < cps.size() && cps[i + 1] == 'r' && (i + 2 >= cps.size() || !is_identifier_continue(cps[i + 2])))
 			{
+				output.emit_line_number(current_line);
 				output.emit_preprocessing_op_or_punc("or");
 				i += 2;
 				at_line_start = false;
@@ -835,11 +854,13 @@ struct PPTokenizer
 				++i;
 				while (i < cps.size() && is_identifier_continue(cps[i]))
 					++i;
+				output.emit_line_number(current_line);
 				output.emit_identifier(utf8_encode_slice(cps, start, i));
 				at_line_start = false;
 				continue;
 			}
 
+			output.emit_line_number(current_line);
 			output.emit_non_whitespace_char(utf8_encode_slice(cps, i, i + 1));
 			++i;
 			at_line_start = false;
@@ -969,6 +990,8 @@ struct PPTokenizer
 						break;
 					}
 				}
+				if (cps[i] == '\n')
+					++current_line;
 				++i;
 			}
 			if (!found)
@@ -1041,7 +1064,10 @@ struct PPTokenizer
 			while (i < cps.size())
 			{
 				if (cps[i] == '\n')
+				{
+					++current_line;
 					throw runtime_error("unterminated string literal");
+				}
 				if (cps[i] == '\\' && i + 1 < cps.size())
 				{
 					consume_escape(i);
@@ -1070,6 +1096,7 @@ struct PPTokenizer
 		string data = utf8_encode_slice(cps, start, i);
 		if (suffix_start != i)
 		{
+			output.emit_line_number(current_line);
 			if (is_char)
 				output.emit_user_defined_character_literal(data);
 			else
@@ -1077,6 +1104,7 @@ struct PPTokenizer
 		}
 		else
 		{
+			output.emit_line_number(current_line);
 			if (is_char)
 				output.emit_character_literal(data);
 			else
