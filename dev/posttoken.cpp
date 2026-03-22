@@ -1878,6 +1878,7 @@ bool EmitStringSequence(DebugPostTokenOutputStream& output, const vector<PPToken
 	return true;
 }
 
+#ifndef CPPGM_EMBED_POSTTOKEN
 int main()
 {
 	try
@@ -1977,3 +1978,4 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+#endif
