@@ -1504,6 +1504,7 @@ void DoRecog(const string& srcfile)
 	throw runtime_error("parse failed");
 }
 
+#ifndef CPPGM_EMBED_RECOG
 int main(int argc, char** argv)
 {
 	try
@@ -1545,3 +1546,4 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 }
+#endif
