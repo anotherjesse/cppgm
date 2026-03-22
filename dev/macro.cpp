@@ -1,6 +1,9 @@
 // (C) 2013 CPPGM Foundation www.cppgm.org.  All rights reserved.
 
-#define main posttoken_internal_main
+#ifndef CPPGM_POSTTOKEN_INTERNAL_MAIN
+#define CPPGM_POSTTOKEN_INTERNAL_MAIN posttoken_internal_main
+#endif
+#define main CPPGM_POSTTOKEN_INTERNAL_MAIN
 #include "posttoken.cpp"
 #undef main
 
@@ -693,7 +696,11 @@ void EmitPostTokenSequence(const vector<PPToken>& flat, DebugPostTokenOutputStre
 	}
 }
 
-int main()
+#ifndef CPPGM_MACRO_MAIN_NAME
+#define CPPGM_MACRO_MAIN_NAME main
+#endif
+
+int CPPGM_MACRO_MAIN_NAME()
 {
 	try
 	{
