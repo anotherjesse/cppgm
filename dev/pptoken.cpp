@@ -1294,6 +1294,7 @@ int main()
 		}
 
 		tokenizer.process(EndOfFile);
+		return EXIT_SUCCESS;
 	}
 	catch (exception& e)
 	{
