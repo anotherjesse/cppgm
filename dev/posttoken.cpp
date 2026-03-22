@@ -17,6 +17,7 @@
 using namespace std;
 
 #define CPPGM_PPTOKEN_LIBRARY
+#define CPPGM_PPTOKEN_SKIP_TRIGRAPHS_IN_STRING_LITERALS
 #include "pptoken.cpp"
 
 // See 3.9.1: Fundamental Types
@@ -719,8 +720,17 @@ namespace
 
 	bool ud_suffix_ok(const string& s)
 	{
-		if (s.size() < 2 || s[0] != '_') return false;
-		for (size_t i = 1; i < s.size(); ++i) if (!is_ident_continue(static_cast<unsigned char>(s[i]))) return false;
+		vector<uint32_t> cps;
+		try
+		{
+			cps = decode_utf8_bytes(vector<unsigned char>(s.begin(), s.end()));
+		}
+		catch (exception&)
+		{
+			return false;
+		}
+		if (cps.size() < 2 || cps[0] != '_') return false;
+		for (size_t i = 1; i < cps.size(); ++i) if (!is_identifier_continue(cps[i])) return false;
 		return true;
 	}
 

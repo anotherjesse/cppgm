@@ -382,22 +382,36 @@ namespace
 		return in.size();
 	}
 
-	vector<uint32_t> replace_trigraphs(const vector<uint32_t>& in)
-	{
-		vector<uint32_t> out;
-		out.reserve(in.size());
-		for (size_t i = 0; i < in.size();)
-		{
-			size_t raw_end = find_raw_string_end(in, i);
-			if (raw_end != string::npos)
-			{
-				out.insert(out.end(), in.begin() + i, in.begin() + raw_end);
-				i = raw_end;
-				continue;
-			}
+	#ifdef CPPGM_PPTOKEN_SKIP_TRIGRAPHS_IN_STRING_LITERALS
+	size_t find_literal_end_for_trigraph_skip(const vector<uint32_t>& in, size_t i);
+	#endif
 
-			if (i + 2 < in.size() && in[i] == '?' && in[i + 1] == '?')
-			{
+	vector<uint32_t> replace_trigraphs(const vector<uint32_t>& in)
+{
+	vector<uint32_t> out;
+	out.reserve(in.size());
+	for (size_t i = 0; i < in.size();)
+	{
+#ifdef CPPGM_PPTOKEN_SKIP_TRIGRAPHS_IN_STRING_LITERALS
+		size_t literal_end = find_literal_end_for_trigraph_skip(in, i);
+		if (literal_end != string::npos)
+		{
+			out.insert(out.end(), in.begin() + i, in.begin() + literal_end);
+			i = literal_end;
+			continue;
+		}
+#else
+		size_t raw_end = find_raw_string_end(in, i);
+		if (raw_end != string::npos)
+		{
+			out.insert(out.end(), in.begin() + i, in.begin() + raw_end);
+			i = raw_end;
+			continue;
+		}
+#endif
+
+		if (i + 2 < in.size() && in[i] == '?' && in[i + 1] == '?')
+		{
 				uint32_t mapped = 0;
 				switch (in[i + 2])
 				{
@@ -422,8 +436,48 @@ namespace
 			out.push_back(in[i]);
 			++i;
 		}
-		return out;
+	return out;
+}
+
+#ifdef CPPGM_PPTOKEN_SKIP_TRIGRAPHS_IN_STRING_LITERALS
+size_t find_literal_end_for_trigraph_skip(const vector<uint32_t>& in, size_t i)
+{
+	size_t j = i;
+	if (j < in.size() && in[j] == 'u' && j + 1 < in.size() && in[j + 1] == '8')
+		j += 2;
+	else if (j < in.size() && (in[j] == 'u' || in[j] == 'U' || in[j] == 'L'))
+		++j;
+
+	if (j < in.size() && in[j] == 'R')
+	{
+		if (i > 0 && (in[i - 1] == '"' || is_identifier_continue(in[i - 1])))
+			return string::npos;
+		return find_raw_string_end(in, i);
 	}
+
+	if (j >= in.size())
+		return string::npos;
+	if (in[j] != '"' && in[j] != '\'')
+		return string::npos;
+
+	uint32_t quote = in[j];
+	++j;
+	while (j < in.size())
+	{
+		if (in[j] == '\\')
+		{
+			if (j + 1 >= in.size())
+				return in.size();
+			j += 2;
+			continue;
+		}
+		if (in[j] == quote)
+			return j + 1;
+		++j;
+	}
+	return in.size();
+}
+#endif
 
 	vector<uint32_t> splice_lines(const vector<uint32_t>& in)
 	{
@@ -729,7 +783,7 @@ struct PPTokenizer
 				while (i < cps.size())
 				{
 					uint32_t c = cps[i];
-					if (is_ascii_digit(c) || is_ascii_alpha(c) || c == '_' || c == '.')
+					if (is_ascii_digit(c) || is_ascii_alpha(c) || c == '_' || c == '.' || is_identifier_continue(c))
 					{
 						prev = c;
 						++i;

@@ -76,6 +76,10 @@ namespace
 		{
 			if (a[i].kind != b[i].kind || a[i].data != b[i].data)
 				return false;
+			if (a[i].placemarker != b[i].placemarker || a[i].macro_op != b[i].macro_op)
+				return false;
+			if (i > 0 && a[i].space_before != b[i].space_before)
+				return false;
 		}
 		return true;
 	}
@@ -143,12 +147,13 @@ namespace
 		{
 			if (arg[i].placemarker)
 				continue;
-			if (!first)
+			if (!first && arg[i].space_before)
 				out.push_back(' ');
+			bool escape_backslash = arg[i].kind == Kind::CHAR || arg[i].kind == Kind::UCHAR || arg[i].kind == Kind::STR || arg[i].kind == Kind::USTR || arg[i].kind == Kind::HEADER;
 			for (size_t j = 0; j < arg[i].data.size(); ++j)
 			{
 				char c = arg[i].data[j];
-				if (c == '\\' || c == '"')
+				if (c == '"' || (escape_backslash && c == '\\'))
 					out.push_back('\\');
 				out.push_back(c);
 			}
@@ -217,34 +222,37 @@ namespace
 		return t;
 	}
 
-	Token paste_two(const Token& left, const Token& right, const Token& head, const string& macro_name)
+	vector<Token> paste_two(const Token& left, const Token& right, const Token& head, const string& macro_name)
 	{
 		if (left.placemarker && right.placemarker)
-			return make_placemarker(head, macro_name);
+			return vector<Token>(1, make_placemarker(head, macro_name));
 		if (left.placemarker)
 		{
 			Token t = right;
 			add_hide(t, head, macro_name);
 			t.space_before = left.space_before;
-			return t;
+			return vector<Token>(1, t);
 		}
 		if (right.placemarker)
 		{
 			Token t = left;
 			add_hide(t, head, macro_name);
 			t.space_before = left.space_before;
-			return t;
+			return vector<Token>(1, t);
 		}
 
 		string pasted = left.data + right.data;
 		vector<Token> toks = tokenize_spelling(pasted);
-		if (toks.size() != 1)
+		if (toks.empty())
 			throw runtime_error("invalid ## result");
-		Token t = toks[0];
-		add_hide(t, head, macro_name);
-		t.space_before = left.space_before;
-		t.macro_op = false;
-		return t;
+		for (size_t i = 0; i < toks.size(); ++i)
+		{
+			add_hide(toks[i], head, macro_name);
+			if (i == 0)
+				toks[i].space_before = left.space_before;
+			toks[i].macro_op = false;
+		}
+		return toks;
 	}
 
 	vector<vector<Token> > split_argument_chunks(const vector<Token>& toks, size_t begin, size_t end)
@@ -284,9 +292,9 @@ namespace
 		return chunks;
 	}
 
-	bool parse_invocation(const vector<Token>& toks, size_t lparen, const Macro& m, vector<vector<Token> >& raw_args, size_t& end_pos)
+	bool parse_invocation(const vector<Token>& toks, size_t lparen, const Macro& m, const string& macro_name, vector<vector<Token> >& raw_args, size_t& end_pos)
 	{
-		if (!is_punc(toks[lparen], "(") || toks[lparen].space_before)
+		if (!is_punc(toks[lparen], "("))
 			return false;
 
 		size_t close = string::npos;
@@ -326,7 +334,7 @@ namespace
 		if (!m.variadic)
 		{
 			if (chunks.size() != m.params.size())
-				return false;
+				throw runtime_error(string("macro function-like invocation wrong num of params: ") + macro_name);
 			raw_args = chunks;
 			end_pos = close + 1;
 			return true;
@@ -352,7 +360,7 @@ namespace
 		}
 
 		if (chunks.size() < fixed)
-			return false;
+			throw runtime_error(string("macro function-like invocation wrong num of params: ") + macro_name);
 		raw_args.clear();
 		for (size_t i = 0; i < fixed; ++i)
 			raw_args.push_back(chunks[i]);
@@ -385,16 +393,16 @@ namespace
 				continue;
 			if (i == 0 || i + 1 >= seq.size())
 				throw runtime_error("## at edge of replacement list");
-			Token pasted = paste_two(seq[i - 1], seq[i + 1], head, macro_name);
+			vector<Token> pasted = paste_two(seq[i - 1], seq[i + 1], head, macro_name);
 			seq.erase(seq.begin() + i - 1, seq.begin() + i + 2);
-			seq.insert(seq.begin() + i - 1, pasted);
+			seq.insert(seq.begin() + i - 1, pasted.begin(), pasted.end());
 			if (i > 0)
 				--i;
 		}
 		return seq;
 	}
 
-	vector<Token> substitute_macro(const Macro& m, const Token& head, const string& macro_name, const vector<vector<Token> >& raw_args, const vector<vector<Token> >& expanded_args)
+	vector<Token> substitute_macro(const Macro& m, const Token& head, const string& macro_name, const vector<vector<Token> >& raw_args, const unordered_map<string, Macro>& macros)
 	{
 		vector<Token> seq;
 		for (size_t i = 0; i < m.replacement.size(); ++i)
@@ -428,15 +436,21 @@ namespace
 			if (idx >= 0)
 			{
 				bool raw = (i > 0 && is_punc(m.replacement[i - 1], "##")) || (i + 1 < m.replacement.size() && is_punc(m.replacement[i + 1], "##"));
-				const vector<Token>& arg = raw ? raw_args[static_cast<size_t>(idx)] : expanded_args[static_cast<size_t>(idx)];
-				if (arg.empty())
+				vector<Token> expanded_arg;
+				const vector<Token>* arg = &raw_args[static_cast<size_t>(idx)];
+				if (!raw)
+				{
+					expanded_arg = expand_tokens(raw_args[static_cast<size_t>(idx)], macros);
+					arg = &expanded_arg;
+				}
+				if (arg->empty())
 				{
 					if (raw)
 						seq.push_back(make_placemarker(head, macro_name));
 				}
 				else
 				{
-					append_sequence(seq, arg, head, macro_name);
+					append_sequence(seq, *arg, head, macro_name);
 				}
 				continue;
 			}
@@ -498,17 +512,13 @@ namespace
 				vector<vector<Token> > raw_args;
 				if (m.function_like)
 				{
-					if (i + 1 >= toks.size() || !is_punc(toks[i + 1], "(") || toks[i + 1].space_before)
+					if (i + 1 >= toks.size() || !is_punc(toks[i + 1], "("))
 						continue;
-					if (!parse_invocation(toks, i + 1, m, raw_args, end_pos))
+					if (!parse_invocation(toks, i + 1, m, toks[i].data, raw_args, end_pos))
 						continue;
 				}
 
-				vector<vector<Token> > expanded_args;
-				for (size_t j = 0; j < raw_args.size(); ++j)
-					expanded_args.push_back(expand_tokens(raw_args[j], macros));
-
-				vector<Token> repl = substitute_macro(m, toks[i], toks[i].data, raw_args, expanded_args);
+				vector<Token> repl = substitute_macro(m, toks[i], toks[i].data, raw_args, macros);
 				toks.erase(toks.begin() + i, toks.begin() + end_pos);
 				toks.insert(toks.begin() + i, repl.begin(), repl.end());
 				changed = true;
@@ -585,6 +595,8 @@ namespace
 		{
 			m.function_like = true;
 			++i;
+			if (i >= line.size())
+				throw runtime_error("expected identifier after lparen");
 			if (i < line.size() && is_punc(line[i], ")"))
 			{
 				++i;
@@ -619,7 +631,12 @@ namespace
 					if (!is_ident(line[i]))
 						throw runtime_error("expected identifier");
 					if (line[i].data == "__VA_ARGS__")
-						throw runtime_error("invalid __VA_ARGS__ use");
+						throw runtime_error("__VA_ARGS__ in macro parameter list");
+					for (size_t j = 0; j < m.params.size(); ++j)
+					{
+						if (m.params[j] == line[i].data)
+							throw runtime_error(string("duplicate parameter ") + line[i].data + " in macro definition");
+					}
 					m.params.push_back(line[i].data);
 					++i;
 					if (i < line.size() && is_punc(line[i], ","))
@@ -657,6 +674,8 @@ namespace
 			throw runtime_error("expected new line");
 		if (!is_ident(line[2]))
 			throw runtime_error("expected identifier");
+		if (line[2].data == "__VA_ARGS__")
+			throw runtime_error("invalid __VA_ARGS__ use");
 		if (line.size() > 3)
 			throw runtime_error("expected new line");
 		macros.erase(line[2].data);
