@@ -975,6 +975,7 @@ string MakeAsctimeLiteralSlice(const tm* info, size_t begin, size_t len)
 	return "\"" + text.substr(begin, len) + "\"";
 }
 
+#ifndef CPPGM_EMBED_PREPROC
 int main(int argc, char** argv)
 {
 	try
@@ -1022,3 +1023,4 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 }
+#endif
