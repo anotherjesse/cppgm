@@ -30,6 +30,12 @@ struct PA8Variable
 	RelocKind reloc_kind = RK_NONE;
 	string reloc_key;
 	size_t reloc_index = 0;
+	bool has_constant_integer = false;
+	unsigned long long constant_integer = 0;
+	bool has_constant_address = false;
+	RelocKind constant_address_kind = RK_NONE;
+	string constant_address_key;
+	size_t constant_address_index = 0;
 };
 
 struct PA8Function
@@ -71,6 +77,12 @@ struct PA8InitValue
 	PA8Variable::RelocKind reloc_kind = PA8Variable::RK_NONE;
 	string reloc_key;
 	size_t reloc_index = 0;
+	bool has_constant_integer = false;
+	unsigned long long constant_integer = 0;
+	bool has_constant_address = false;
+	PA8Variable::RelocKind constant_address_kind = PA8Variable::RK_NONE;
+	string constant_address_key;
+	size_t constant_address_index = 0;
 };
 
 bool ParseSmallIntegerLiteral(const string& source, long long& value)
@@ -343,6 +355,25 @@ bool ParseStringLiteralBytes(const string& source, TypePtr& literal_type, vector
 	return false;
 }
 
+bool ParseIntegralLiteralConstant(const string& source, unsigned long long& value)
+{
+	long long signed_value = 0;
+	if (ParseSmallIntegerLiteral(source, signed_value))
+	{
+		value = static_cast<unsigned long long>(signed_value);
+		return true;
+	}
+
+	CharacterLiteralInfo info;
+	if (ParseCharacterLiteralSource(source, info) && info.valid && !info.user_defined)
+	{
+		value = info.value;
+		return true;
+	}
+
+	return false;
+}
+
 bool TypeHasTopLevelConst(TypePtr type)
 {
 	return type->kind == Type::TK_CV && type->is_const;
@@ -422,10 +453,24 @@ struct PA8BootstrapParser : PA7Parser
 		return ns;
 	}
 
+	static bool ParseArrayBoundHook(PA7Parser* parser, size_t& value)
+	{
+		PA8BootstrapParser* self = static_cast<PA8BootstrapParser*>(parser);
+		PA8InitValue bound = self->ParseConstantExpressionValue();
+		if (!bound.has_constant_integer || bound.constant_integer == 0)
+		{
+			return false;
+		}
+		value = static_cast<size_t>(bound.constant_integer);
+		return static_cast<unsigned long long>(value) == bound.constant_integer;
+	}
+
 	explicit PA8BootstrapParser(const vector<RecogToken>& tokens, const string& source_tag)
 		: PA7Parser(tokens, CreateBootstrapGlobal()),
 		  internal_scope_tag(source_tag)
-	{}
+	{
+		CPPGM_PA7_ARRAY_BOUND_HOOK = &ParseArrayBoundHook;
+	}
 
 	string InternalScopeKey(const NameRef& ref) const
 	{
@@ -501,9 +546,72 @@ struct PA8BootstrapParser : PA7Parser
 		return LocalScopeKey(ref) + "::" + ref.name + "|" + DescribeType(type);
 	}
 
+	PA8InitValue ParseConstantExpressionValue()
+	{
+		if (MatchSimple(KW_TRUE))
+		{
+			PA8InitValue value;
+			value.has_constant_integer = true;
+			value.constant_integer = 1;
+			return value;
+		}
+		if (MatchSimple(KW_FALSE) || MatchSimple(KW_NULLPTR))
+		{
+			PA8InitValue value;
+			value.has_constant_integer = true;
+			value.constant_integer = 0;
+			return value;
+		}
+		if (AtLiteral())
+		{
+			unsigned long long literal = 0;
+			if (ParseIntegralLiteralConstant(tokens[pos].source, literal))
+			{
+				++pos;
+				PA8InitValue value;
+				value.has_constant_integer = true;
+				value.constant_integer = literal;
+				return value;
+			}
+			throw runtime_error("unsupported constant expression");
+		}
+		if (MatchSimple(OP_LPAREN))
+		{
+			PA8InitValue value = ParseConstantExpressionValue();
+			ExpectSimple(OP_RPAREN);
+			return value;
+		}
+		if (AtIdentifier() || AtSimple(OP_COLON2))
+		{
+			NameRef ref = ParseIdExpressionTarget();
+			auto vit = local_variable_index.find(LocalVariableKey(ref));
+			if (vit == local_variable_index.end())
+			{
+				throw runtime_error("unsupported constant expression");
+			}
+			const PA8Variable& var = variables[vit->second];
+			PA8InitValue value;
+			if (var.has_constant_integer)
+			{
+				value.has_constant_integer = true;
+				value.constant_integer = var.constant_integer;
+				return value;
+			}
+			if (var.has_constant_address)
+			{
+				value.has_constant_address = true;
+				value.constant_address_kind = var.constant_address_kind;
+				value.constant_address_key = var.constant_address_key;
+				value.constant_address_index = var.constant_address_index;
+				return value;
+			}
+			throw runtime_error("unsupported constant expression");
+		}
+		throw runtime_error("unsupported constant expression");
+	}
+
 	PA8InitValue ParseInitializerValue(TypePtr& type)
 	{
-		type = StripTopLevelCV(type);
 		if (TypeIsReference(type))
 		{
 			TypePtr referred = type->child;
@@ -524,6 +632,12 @@ struct PA8BootstrapParser : PA7Parser
 				init.bytes = ZeroBytes(TypeSize(type));
 				init.reloc_kind = PA8Variable::RK_TEMP;
 				init.reloc_index = temps.size() - 1;
+				unsigned long long literal = 0;
+				if (ParseIntegralLiteralConstant(tokens[pos - 1].source, literal))
+				{
+					init.has_constant_integer = true;
+					init.constant_integer = literal;
+				}
 				return init;
 			}
 			if (AtIdentifier() || AtSimple(OP_COLON2))
@@ -548,6 +662,18 @@ struct PA8BootstrapParser : PA7Parser
 					init.reloc_kind = PA8Variable::RK_VARIABLE;
 					init.reloc_key = target.key;
 				}
+				if (target.has_constant_integer)
+				{
+					init.has_constant_integer = true;
+					init.constant_integer = target.constant_integer;
+				}
+				if (target.has_constant_address)
+				{
+					init.has_constant_address = true;
+					init.constant_address_kind = target.constant_address_kind;
+					init.constant_address_key = target.constant_address_key;
+					init.constant_address_index = target.constant_address_index;
+				}
 				return init;
 			}
 			throw runtime_error("unsupported initializer");
@@ -555,31 +681,39 @@ struct PA8BootstrapParser : PA7Parser
 
 		if (MatchSimple(KW_NULLPTR))
 		{
-			if (type->kind != Type::TK_POINTER &&
-				type->kind != Type::TK_LVALUE_REF &&
-				type->kind != Type::TK_RVALUE_REF)
+			TypePtr value_type = StripTopLevelCV(type);
+			if (value_type->kind != Type::TK_POINTER &&
+				value_type->kind != Type::TK_LVALUE_REF &&
+				value_type->kind != Type::TK_RVALUE_REF)
 			{
 				throw runtime_error("unsupported initializer");
 			}
 			PA8InitValue init;
 			init.bytes = ZeroBytes(TypeSize(type));
+			init.has_constant_integer = true;
+			init.constant_integer = 0;
 			return init;
 		}
 		if (MatchSimple(KW_TRUE))
 		{
 			PA8InitValue init;
 			init.bytes = EncodeIntegralBytes(type, 1);
+			init.has_constant_integer = true;
+			init.constant_integer = 1;
 			return init;
 		}
 		if (MatchSimple(KW_FALSE))
 		{
 			PA8InitValue init;
 			init.bytes = EncodeIntegralBytes(type, 0);
+			init.has_constant_integer = true;
+			init.constant_integer = 0;
 			return init;
 		}
 		if (AtLiteral())
 		{
-			if (type->kind == Type::TK_ARRAY)
+			TypePtr value_type = StripTopLevelCV(type);
+			if (value_type->kind == Type::TK_ARRAY)
 			{
 				TypePtr literal_type;
 				vector<char> literal_bytes;
@@ -591,7 +725,7 @@ struct PA8BootstrapParser : PA7Parser
 					str.bytes = literal_bytes;
 					strings.push_back(str);
 
-					TypePtr elem = StripTopLevelCV(type->child);
+					TypePtr elem = StripTopLevelCV(value_type->child);
 					TypePtr literal_elem = StripTopLevelCV(literal_type->child);
 					if (elem->kind != Type::TK_FUNDAMENTAL ||
 						literal_elem->kind != Type::TK_FUNDAMENTAL)
@@ -617,10 +751,10 @@ struct PA8BootstrapParser : PA7Parser
 						throw runtime_error("unsupported initializer");
 					}
 
-					size_t bound = type->array_bound;
-					if (type->array_unknown)
+					size_t bound = value_type->array_bound;
+					if (value_type->array_unknown)
 					{
-						type = MakeArrayType(type->child, false, literal_count);
+						type = MakeArrayType(value_type->child, false, literal_count);
 						bound = literal_count;
 					}
 					if (bound < literal_count)
@@ -629,7 +763,7 @@ struct PA8BootstrapParser : PA7Parser
 					}
 
 					PA8InitValue init;
-					init.bytes.assign(bound * TypeSize(type->child), 0);
+					init.bytes.assign(bound * TypeSize(value_type->child), 0);
 					copy(literal_bytes.begin(), literal_bytes.end(), init.bytes.begin());
 					++pos;
 					return init;
@@ -644,7 +778,47 @@ struct PA8BootstrapParser : PA7Parser
 			++pos;
 			PA8InitValue init;
 			init.bytes = bytes;
+			unsigned long long literal = 0;
+			if (ParseIntegralLiteralConstant(tokens[pos - 1].source, literal))
+			{
+				init.has_constant_integer = true;
+				init.constant_integer = literal;
+			}
 			return init;
+		}
+		if ((AtIdentifier() || AtSimple(OP_COLON2)) &&
+			type->kind == Type::TK_POINTER &&
+			StripTopLevelCV(type->child)->kind != Type::TK_FUNCTION)
+		{
+			NameRef ref = ParseIdExpressionTarget();
+			auto vit = local_variable_index.find(LocalVariableKey(ref));
+			if (vit != local_variable_index.end())
+			{
+				const PA8Variable& target = variables[vit->second];
+				TypePtr pointee = StripTopLevelCV(type->child);
+				TypePtr target_type = StripTopLevelCV(target.type);
+				if (target_type->kind == Type::TK_ARRAY &&
+					TypeEquals(target_type->child, pointee))
+				{
+					PA8InitValue init;
+					init.bytes = ZeroBytes(TypeSize(type));
+					init.reloc_kind = PA8Variable::RK_VARIABLE;
+					init.reloc_key = target.key;
+					init.has_constant_address = true;
+					init.constant_address_kind = PA8Variable::RK_VARIABLE;
+					init.constant_address_key = target.key;
+					return init;
+				}
+				if (target.has_constant_integer &&
+					StripTopLevelCV(type)->kind == Type::TK_FUNDAMENTAL)
+				{
+					PA8InitValue init;
+					init.bytes = EncodeIntegralBytes(type, static_cast<long long>(target.constant_integer));
+					init.has_constant_integer = true;
+					init.constant_integer = target.constant_integer;
+					return init;
+				}
+			}
 		}
 		if ((AtIdentifier() || AtSimple(OP_COLON2)) &&
 			type->kind == Type::TK_POINTER &&
@@ -660,7 +834,24 @@ struct PA8BootstrapParser : PA7Parser
 			init.bytes = ZeroBytes(TypeSize(type));
 			init.reloc_kind = PA8Variable::RK_FUNCTION;
 			init.reloc_key = functions[local_function_index[key]].key;
+			init.has_constant_address = true;
+			init.constant_address_kind = PA8Variable::RK_FUNCTION;
+			init.constant_address_key = init.reloc_key;
 			return init;
+		}
+		if (AtIdentifier() || AtSimple(OP_COLON2))
+		{
+			NameRef ref = ParseIdExpressionTarget();
+			auto vit = local_variable_index.find(LocalVariableKey(ref));
+			if (vit != local_variable_index.end() && variables[vit->second].has_constant_integer)
+			{
+				const PA8Variable& target = variables[vit->second];
+				PA8InitValue init;
+				init.bytes = EncodeIntegralBytes(type, static_cast<long long>(target.constant_integer));
+				init.has_constant_integer = true;
+				init.constant_integer = target.constant_integer;
+				return init;
+			}
 		}
 		throw runtime_error("unsupported initializer");
 	}
@@ -694,6 +885,21 @@ struct PA8BootstrapParser : PA7Parser
 			var.reloc_kind = has_initializer ? init.reloc_kind : PA8Variable::RK_NONE;
 			var.reloc_key = has_initializer ? init.reloc_key : "";
 			var.reloc_index = has_initializer ? init.reloc_index : 0;
+			if (has_initializer)
+			{
+				if ((spec.is_constexpr || TypeIsReference(applied.type)) && init.has_constant_address)
+				{
+					var.has_constant_address = true;
+					var.constant_address_kind = init.constant_address_kind;
+					var.constant_address_key = init.constant_address_key;
+					var.constant_address_index = init.constant_address_index;
+				}
+				if ((spec.is_constexpr || TypeIsReference(applied.type) || TypeHasTopLevelConst(applied.type)) && init.has_constant_integer)
+				{
+					var.has_constant_integer = true;
+					var.constant_integer = init.constant_integer;
+				}
+			}
 			variables.push_back(var);
 			variable_index[key] = variables.size() - 1;
 			local_variable_index[LocalVariableKey(applied.name)] = variables.size() - 1;
@@ -707,6 +913,23 @@ struct PA8BootstrapParser : PA7Parser
 			variables[it->second].reloc_kind = has_initializer ? init.reloc_kind : PA8Variable::RK_NONE;
 			variables[it->second].reloc_key = has_initializer ? init.reloc_key : "";
 			variables[it->second].reloc_index = has_initializer ? init.reloc_index : 0;
+			variables[it->second].has_constant_integer = false;
+			variables[it->second].has_constant_address = false;
+			if (has_initializer)
+			{
+				if ((spec.is_constexpr || TypeIsReference(applied.type)) && init.has_constant_address)
+				{
+					variables[it->second].has_constant_address = true;
+					variables[it->second].constant_address_kind = init.constant_address_kind;
+					variables[it->second].constant_address_key = init.constant_address_key;
+					variables[it->second].constant_address_index = init.constant_address_index;
+				}
+				if ((spec.is_constexpr || TypeIsReference(applied.type) || TypeHasTopLevelConst(applied.type)) && init.has_constant_integer)
+				{
+					variables[it->second].has_constant_integer = true;
+					variables[it->second].constant_integer = init.constant_integer;
+				}
+			}
 		}
 	}
 
@@ -775,8 +998,39 @@ struct PA8BootstrapParser : PA7Parser
 			return;
 		}
 
+		if (AtSimple(KW_STATIC_ASSERT))
+		{
+			ExpectSimple(KW_STATIC_ASSERT);
+			ExpectSimple(OP_LPAREN);
+			PA8InitValue cond = ParseConstantExpressionValue();
+			ExpectSimple(OP_COMMA);
+			if (!AtLiteral())
+			{
+				throw runtime_error("unsupported static_assert");
+			}
+			++pos;
+			ExpectSimple(OP_RPAREN);
+			ExpectSimple(OP_SEMICOLON);
+			bool truthy = (cond.has_constant_integer && cond.constant_integer != 0) ||
+				(cond.has_constant_address &&
+					(cond.constant_address_kind != PA8Variable::RK_NONE ||
+					 !cond.constant_address_key.empty() ||
+					 cond.constant_address_index != 0));
+			if (!truthy)
+			{
+				throw runtime_error("static_assert on non-constant expression");
+			}
+			return;
+		}
+
 		if (AtSimple(KW_NAMESPACE))
 		{
+			if (AtIdentifier(1) && AtSimple(OP_ASS, 2))
+			{
+				ParseNamespaceAliasDefinition();
+				return;
+			}
+
 			ExpectSimple(KW_NAMESPACE);
 			NamespaceDecl* saved = current;
 			NamespaceDecl* child = nullptr;
@@ -800,6 +1054,23 @@ struct PA8BootstrapParser : PA7Parser
 			return;
 		}
 
+		if (AtSimple(KW_USING))
+		{
+			if (AtIdentifier(1) && AtSimple(OP_ASS, 2))
+			{
+				ParseAliasDeclaration();
+			}
+			else if (AtSimple(KW_NAMESPACE, 1))
+			{
+				ParseUsingDirective();
+			}
+			else
+			{
+				ParseUsingDeclaration();
+			}
+			return;
+		}
+
 		ParsedSpecifiers spec = ParseDeclSpecifierSeq(true, true);
 		TypePtr base = BuildFundamentalType(spec);
 		DeclaratorPtr declarator = ParseDeclarator(false);
@@ -811,16 +1082,23 @@ struct PA8BootstrapParser : PA7Parser
 		{
 			throw runtime_error("qualified name not from enclosed namespace");
 		}
+		NamespaceDecl* saved_scope = current;
+		if (applied.name.has_name && applied.name.owner)
+		{
+			current = applied.name.owner;
+		}
 
 		if (MatchSimple(OP_LBRACE))
 		{
 			ExpectSimple(OP_RBRACE);
 			if (applied.type->kind != Type::TK_FUNCTION)
 			{
+				current = saved_scope;
 				throw runtime_error("expected function");
 			}
 			DeclareFunction(applied.name.owner, applied.name.name, applied.type);
 			RecordFunction(spec, applied, true);
+			current = saved_scope;
 			return;
 		}
 
@@ -833,6 +1111,7 @@ struct PA8BootstrapParser : PA7Parser
 		}
 
 		ExpectSimple(OP_SEMICOLON);
+		current = saved_scope;
 		if (spec.is_typedef)
 		{
 			DeclareTypeAlias(applied.name.owner, applied.name.name, applied.type);

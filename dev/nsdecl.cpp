@@ -24,6 +24,9 @@ typedef shared_ptr<Type> TypePtr;
 typedef shared_ptr<NamespaceDecl> NamespacePtr;
 
 TypePtr StripTopLevelCV(TypePtr type);
+struct PA7Parser;
+typedef bool (*PA7ArrayBoundHook)(PA7Parser*, size_t&);
+PA7ArrayBoundHook CPPGM_PA7_ARRAY_BOUND_HOOK = nullptr;
 
 struct Type
 {
@@ -91,7 +94,7 @@ TypePtr MakeLValueReferenceType(TypePtr child)
 	TypePtr base = StripTopLevelCV(child);
 	if (base->kind == Type::TK_LVALUE_REF || base->kind == Type::TK_RVALUE_REF)
 	{
-		throw runtime_error("reference to reference in declarator");
+		return MakeLValueReferenceType(base->child);
 	}
 	if (base->kind == Type::TK_FUNDAMENTAL && base->fundamental == FT_VOID)
 	{
@@ -107,9 +110,13 @@ TypePtr MakeLValueReferenceType(TypePtr child)
 TypePtr MakeRValueReferenceType(TypePtr child)
 {
 	TypePtr base = StripTopLevelCV(child);
-	if (base->kind == Type::TK_LVALUE_REF || base->kind == Type::TK_RVALUE_REF)
+	if (base->kind == Type::TK_LVALUE_REF)
 	{
-		throw runtime_error("reference to reference in declarator");
+		return MakeLValueReferenceType(base->child);
+	}
+	if (base->kind == Type::TK_RVALUE_REF)
+	{
+		return MakeRValueReferenceType(base->child);
 	}
 	if (base->kind == Type::TK_FUNDAMENTAL && base->fundamental == FT_VOID)
 	{
@@ -341,6 +348,7 @@ struct NamespaceDecl
 	unordered_map<string, TypePtr> types;
 	unordered_map<string, NamespacePtr> named_namespaces;
 	unordered_map<string, NamespaceDecl*> namespace_aliases;
+	unordered_set<string> using_value_names;
 	vector<NamespaceDecl*> using_directives;
 	NamespacePtr unnamed_namespace;
 };
@@ -372,6 +380,7 @@ NamespaceDecl* GetOrCreateNamedNamespace(NamespaceDecl* owner, const string& nam
 	if (owner->types.find(name) != owner->types.end() ||
 		owner->variables.find(name) != owner->variables.end() ||
 		owner->functions.find(name) != owner->functions.end() ||
+		owner->using_value_names.find(name) != owner->using_value_names.end() ||
 		owner->namespace_aliases.find(name) != owner->namespace_aliases.end())
 	{
 		throw runtime_error("namespace conflicts with existing declaration");
@@ -522,6 +531,10 @@ TypePtr LookupTypeQualified(NamespaceDecl* scope, const string& name)
 
 bool HasValueQualified(NamespaceDecl* scope, const string& name)
 {
+	if (scope->using_value_names.find(name) != scope->using_value_names.end())
+	{
+		return true;
+	}
 	if (scope->variables.find(name) != scope->variables.end() ||
 		scope->functions.find(name) != scope->functions.end())
 	{
@@ -677,8 +690,16 @@ AppliedDeclarator ApplyDeclarator(const DeclaratorPtr& node, TypePtr base)
 	case DeclaratorNode::DK_POINTER:
 		return ApplyDeclarator(node->child, MakePointerType(base));
 	case DeclaratorNode::DK_LVALUE_REF:
+		if (node->child->kind == DeclaratorNode::DK_LVALUE_REF || node->child->kind == DeclaratorNode::DK_RVALUE_REF)
+		{
+			throw runtime_error("reference to reference in declarator");
+		}
 		return ApplyDeclarator(node->child, MakeLValueReferenceType(base));
 	case DeclaratorNode::DK_RVALUE_REF:
+		if (node->child->kind == DeclaratorNode::DK_LVALUE_REF || node->child->kind == DeclaratorNode::DK_RVALUE_REF)
+		{
+			throw runtime_error("reference to reference in declarator");
+		}
 		return ApplyDeclarator(node->child, MakeRValueReferenceType(base));
 	case DeclaratorNode::DK_ARRAY:
 		return ApplyDeclarator(node->child, MakeArrayType(base, node->array_unknown, node->array_bound));
@@ -1362,14 +1383,36 @@ struct PA7Parser
 			{
 				bool unknown = true;
 				size_t bound = 0;
-				if (AtLiteral())
+				if (!AtSimple(OP_RSQUARE))
 				{
-					if (!ParsePositiveArrayBound(tokens[pos].source, bound))
+					if (AtLiteral())
+					{
+						if (!ParsePositiveArrayBound(tokens[pos].source, bound))
+						{
+							throw runtime_error("invalid array bound");
+						}
+						++pos;
+						unknown = false;
+					}
+					else if (CPPGM_PA7_ARRAY_BOUND_HOOK)
+					{
+						NamespaceDecl* saved_scope = current;
+						if (node->kind == DeclaratorNode::DK_NAME && node->name.has_name && node->name.owner)
+						{
+							current = node->name.owner;
+						}
+						bool ok = CPPGM_PA7_ARRAY_BOUND_HOOK(this, bound);
+						current = saved_scope;
+						if (!ok)
+						{
+							throw runtime_error("invalid array bound");
+						}
+						unknown = false;
+					}
+					else
 					{
 						throw runtime_error("invalid array bound");
 					}
-					++pos;
-					unknown = false;
 				}
 				ExpectSimple(OP_RSQUARE);
 				DeclaratorPtr arr = MakeDeclaratorNode(DeclaratorNode::DK_ARRAY);
@@ -1511,6 +1554,15 @@ struct PA7Parser
 		NamespaceDecl* target = ParseQualifiedNamespaceSpecifier();
 		ExpectSimple(OP_SEMICOLON);
 
+		if (current->named_namespaces.find(alias) != current->named_namespaces.end() ||
+			current->types.find(alias) != current->types.end() ||
+			current->variables.find(alias) != current->variables.end() ||
+			current->functions.find(alias) != current->functions.end() ||
+			current->using_value_names.find(alias) != current->using_value_names.end())
+		{
+			throw runtime_error("conflicting namespace alias");
+		}
+
 		auto it = current->namespace_aliases.find(alias);
 		if (it == current->namespace_aliases.end())
 		{
@@ -1537,15 +1589,7 @@ struct PA7Parser
 		{
 			throw runtime_error("using target not found");
 		}
-		if (current->variables.find(ref.name) == current->variables.end() &&
-			current->functions.find(ref.name) == current->functions.end())
-		{
-			shared_ptr<VariableDecl> decl(new VariableDecl);
-			decl->name = ref.name;
-			decl->type = MakeFundamentalType(FT_INT);
-			current->variables[ref.name] = decl;
-			current->variables_in_order.push_back(decl);
-		}
+		current->using_value_names.insert(ref.name);
 	}
 
 	void ParseUsingDirective()
