@@ -1770,6 +1770,7 @@ void EmitPostTokensOrThrow(ostream& out, const vector<PPToken>& toks)
 	}
 }
 
+#ifndef CPPGM_PREPROC_NO_MAIN
 int main(int argc, char** argv)
 {
 	try
@@ -1812,3 +1813,4 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 }
+#endif
