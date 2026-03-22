@@ -1814,6 +1814,7 @@ namespace pa5preproc
 	}
 } // namespace pa5preproc
 
+#ifndef CPPGM_PREPROC_LIBRARY
 int main(int argc, char** argv)
 {
 	try
@@ -1863,3 +1864,4 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 }
+#endif
