@@ -1,7 +1,11 @@
 // (C) 2013 CPPGM Foundation www.cppgm.org.  All rights reserved.
 
+#ifndef CPPGM_POSTTOKEN_INTERNAL_MAIN
 #define CPPGM_POSTTOKEN_INTERNAL_MAIN preproc_posttoken_internal_main
+#endif
+#ifndef CPPGM_MACRO_MAIN_NAME
 #define CPPGM_MACRO_MAIN_NAME macro_internal_main
+#endif
 #include "macro.cpp"
 #undef CPPGM_MACRO_MAIN_NAME
 #undef CPPGM_POSTTOKEN_INTERNAL_MAIN
@@ -1029,17 +1033,27 @@ void ProcessSourceFileRecursive(const string& srcfile, bool is_include, PreprocS
 	}
 }
 
-void ProcessSourceFile(const string& srcfile)
+vector<PPToken> PreprocessSourceTokens(const string& srcfile)
 {
 	PreprocState state;
 	ProcessSourceFileRecursive(srcfile, false, state);
 	EnsureValidTokens(state.out_tokens);
+	return state.out_tokens;
+}
+
+void ProcessSourceFile(const string& srcfile)
+{
+	vector<PPToken> tokens = PreprocessSourceTokens(srcfile);
 	DebugPostTokenOutputStream output;
-	EmitPostTokenSequence(state.out_tokens, output);
+	EmitPostTokenSequence(tokens, output);
 	output.emit_eof();
 }
 
-int main(int argc, char** argv)
+#ifndef CPPGM_PREPROC_MAIN_NAME
+#define CPPGM_PREPROC_MAIN_NAME main
+#endif
+
+int CPPGM_PREPROC_MAIN_NAME(int argc, char** argv)
 {
 	try
 	{
