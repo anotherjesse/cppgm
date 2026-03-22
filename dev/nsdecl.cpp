@@ -23,6 +23,8 @@ struct NamespaceDecl;
 typedef shared_ptr<Type> TypePtr;
 typedef shared_ptr<NamespaceDecl> NamespacePtr;
 
+TypePtr StripTopLevelCV(TypePtr type);
+
 struct Type
 {
 	enum Kind
@@ -72,6 +74,12 @@ TypePtr MakeCVType(TypePtr child, bool is_const, bool is_volatile)
 
 TypePtr MakePointerType(TypePtr child)
 {
+	TypePtr base = StripTopLevelCV(child);
+	if (base->kind == Type::TK_LVALUE_REF || base->kind == Type::TK_RVALUE_REF)
+	{
+		throw runtime_error("pointer to that type not allowed");
+	}
+
 	TypePtr out(new Type);
 	out->kind = Type::TK_POINTER;
 	out->child = child;
@@ -80,9 +88,14 @@ TypePtr MakePointerType(TypePtr child)
 
 TypePtr MakeLValueReferenceType(TypePtr child)
 {
-	if (child->kind == Type::TK_LVALUE_REF || child->kind == Type::TK_RVALUE_REF)
+	TypePtr base = StripTopLevelCV(child);
+	if (base->kind == Type::TK_LVALUE_REF || base->kind == Type::TK_RVALUE_REF)
 	{
-		return MakeLValueReferenceType(child->child);
+		throw runtime_error("reference to reference in declarator");
+	}
+	if (base->kind == Type::TK_FUNDAMENTAL && base->fundamental == FT_VOID)
+	{
+		throw runtime_error("invalid type for reference to");
 	}
 
 	TypePtr out(new Type);
@@ -93,13 +106,14 @@ TypePtr MakeLValueReferenceType(TypePtr child)
 
 TypePtr MakeRValueReferenceType(TypePtr child)
 {
-	if (child->kind == Type::TK_LVALUE_REF)
+	TypePtr base = StripTopLevelCV(child);
+	if (base->kind == Type::TK_LVALUE_REF || base->kind == Type::TK_RVALUE_REF)
 	{
-		return MakeLValueReferenceType(child->child);
+		throw runtime_error("reference to reference in declarator");
 	}
-	if (child->kind == Type::TK_RVALUE_REF)
+	if (base->kind == Type::TK_FUNDAMENTAL && base->fundamental == FT_VOID)
 	{
-		return MakeRValueReferenceType(child->child);
+		throw runtime_error("invalid type for reference to");
 	}
 
 	TypePtr out(new Type);
@@ -355,6 +369,14 @@ void AddUsingDirective(NamespaceDecl* owner, NamespaceDecl* target)
 
 NamespaceDecl* GetOrCreateNamedNamespace(NamespaceDecl* owner, const string& name, bool inline_namespace)
 {
+	if (owner->types.find(name) != owner->types.end() ||
+		owner->variables.find(name) != owner->variables.end() ||
+		owner->functions.find(name) != owner->functions.end() ||
+		owner->namespace_aliases.find(name) != owner->namespace_aliases.end())
+	{
+		throw runtime_error("namespace conflicts with existing declaration");
+	}
+
 	auto it = owner->named_namespaces.find(name);
 	if (it != owner->named_namespaces.end())
 	{
@@ -437,9 +459,9 @@ void DeclareFunction(NamespaceDecl* owner, const string& name, TypePtr type)
 		owner->functions_in_order.push_back(decl);
 		return;
 	}
-	if (!TypeEquals(it->second->type, type))
+	if (TypeEquals(it->second->type, type))
 	{
-		throw runtime_error("conflicting function declaration");
+		return;
 	}
 }
 
@@ -673,6 +695,8 @@ struct ParsedSpecifiers
 	bool is_extern = false;
 	bool is_static = false;
 	bool is_thread_local = false;
+	bool is_constexpr = false;
+	bool is_inline = false;
 	bool is_const = false;
 	bool is_volatile = false;
 	bool has_non_cv_type = false;
@@ -1140,6 +1164,18 @@ struct PA7Parser
 				any = true;
 				continue;
 			}
+			if (MatchSimple(KW_CONSTEXPR))
+			{
+				spec.is_constexpr = true;
+				any = true;
+				continue;
+			}
+			if (MatchSimple(KW_INLINE))
+			{
+				spec.is_inline = true;
+				any = true;
+				continue;
+			}
 			if (allow_typedef && MatchSimple(KW_TYPEDEF))
 			{
 				spec.is_typedef = true;
@@ -1501,6 +1537,15 @@ struct PA7Parser
 		{
 			throw runtime_error("using target not found");
 		}
+		if (current->variables.find(ref.name) == current->variables.end() &&
+			current->functions.find(ref.name) == current->functions.end())
+		{
+			shared_ptr<VariableDecl> decl(new VariableDecl);
+			decl->name = ref.name;
+			decl->type = MakeFundamentalType(FT_INT);
+			current->variables[ref.name] = decl;
+			current->variables_in_order.push_back(decl);
+		}
 	}
 
 	void ParseUsingDirective()
@@ -1671,6 +1716,7 @@ NamespacePtr AnalyzeTranslationUnit(const string& srcfile)
 	return global;
 }
 
+#ifndef CPPGM_EMBED_NSDECL
 int main(int argc, char** argv)
 {
 	try
@@ -1706,3 +1752,4 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 }
+#endif
