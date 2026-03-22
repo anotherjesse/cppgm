@@ -15,8 +15,14 @@ using namespace std;
 
 // mock implementation of IsDefinedIdentifier for PA3
 // return true iff first code point is odd
+bool (*CPPGM_IsDefinedIdentifierHook)(const string&) = nullptr;
+
 bool PA3Mock_IsDefinedIdentifier(const string& identifier)
 {
+	if (CPPGM_IsDefinedIdentifierHook)
+	{
+		return CPPGM_IsDefinedIdentifierHook(identifier);
+	}
 	if (identifier.empty())
 		return false;
 	else
@@ -838,6 +844,7 @@ bool EvaluateLine(const vector<PPToken>& line, string& output_line)
 	return true;
 }
 
+#ifndef CPPGM_EMBED_CTRLEXPR
 int main()
 {
 	try
@@ -884,3 +891,4 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+#endif

@@ -1,5 +1,8 @@
 // (C) 2013 CPPGM Foundation www.cppgm.org.  All rights reserved.
 
+#ifndef CPPGM_POSTTOKEN_IMPLEMENTATION
+#define CPPGM_POSTTOKEN_IMPLEMENTATION
+
 #include <iostream>
 #include <sstream>
 #include <fstream>
@@ -1978,4 +1981,6 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+
+#endif
 #endif

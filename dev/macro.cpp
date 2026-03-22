@@ -18,6 +18,8 @@ struct MacroToken
 	EPPTokenKind kind;
 	string source;
 	set<string> blacklist;
+	string file;
+	int line = 0;
 };
 
 struct MacroDef
@@ -34,6 +36,21 @@ MacroToken MakeMacroToken(EPPTokenKind kind, const string& source)
 	token.kind = kind;
 	token.source = source;
 	return token;
+}
+
+string QuoteMacroStringLiteral(const string& text)
+{
+	string out = "\"";
+	for (char c : text)
+	{
+		if (c == '\\' || c == '"')
+		{
+			out += '\\';
+		}
+		out += c;
+	}
+	out += '"';
+	return out;
 }
 
 bool IsWhitespaceToken(const MacroToken& token)
@@ -53,7 +70,16 @@ bool IsVaArgsToken(const MacroToken& token)
 
 bool IsOpToken(const MacroToken& token, const string& source)
 {
-	return token.kind == PPT_PREPROCESSING_OP_OR_PUNC && token.source == source;
+	if (token.kind != PPT_PREPROCESSING_OP_OR_PUNC)
+	{
+		return false;
+	}
+	if (token.source == source)
+	{
+		return true;
+	}
+	return (source == "#" && token.source == "%:") ||
+		(source == "##" && token.source == "%:%:");
 }
 
 void SkipWhitespace(const vector<MacroToken>& tokens, size_t& pos)
@@ -298,6 +324,15 @@ struct MacroProcessor
 		return out;
 	}
 
+	void StampOrigin(vector<MacroToken>& tokens, const MacroToken& origin) const
+	{
+		for (MacroToken& token : tokens)
+		{
+			token.file = origin.file;
+			token.line = origin.line;
+		}
+	}
+
 	void CheckNoVaArgsInText(const vector<MacroToken>& tokens) const
 	{
 		for (const MacroToken& token : tokens)
@@ -481,6 +516,8 @@ struct MacroProcessor
 		for (MacroToken& token : pasted)
 		{
 			token.blacklist.insert(blacklist.begin(), blacklist.end());
+			token.file = !left.file.empty() ? left.file : right.file;
+			token.line = left.line != 0 ? left.line : right.line;
 		}
 
 		lhs.insert(lhs.end(), pasted.begin(), pasted.end());
@@ -489,7 +526,7 @@ struct MacroProcessor
 	}
 
 	vector<MacroToken> ExpandFunctionReplacement(const MacroDef& macro,
-		const vector<vector<MacroToken>>& args, const set<string>& add_blacklist)
+		const vector<vector<MacroToken>>& args, const set<string>& add_blacklist, const MacroToken& origin)
 	{
 		map<string, vector<MacroToken>> original_args;
 		map<string, vector<MacroToken>> raw_args;
@@ -539,6 +576,8 @@ struct MacroProcessor
 				size_t next = NextNonWhitespace(macro.replacement, i + 1);
 				MacroToken stringized = MakeMacroToken(PPT_STRING_LITERAL, StringizeTokens(raw_args[macro.replacement[next].source]));
 				stringized.blacklist.insert(add_blacklist.begin(), add_blacklist.end());
+				stringized.file = origin.file;
+				stringized.line = origin.line;
 				piece.push_back(stringized);
 				i = next + 1;
 			}
@@ -569,6 +608,8 @@ struct MacroProcessor
 				{
 					MacroToken copied = macro.replacement[i];
 					copied.blacklist.insert(add_blacklist.begin(), add_blacklist.end());
+					copied.file = origin.file;
+					copied.line = origin.line;
 					piece.push_back(copied);
 				}
 				++i;
@@ -598,7 +639,7 @@ struct MacroProcessor
 		return out;
 	}
 
-	vector<MacroToken> ExpandObjectReplacement(const MacroDef& macro, const set<string>& add_blacklist) const
+	vector<MacroToken> ExpandObjectReplacement(const MacroDef& macro, const set<string>& add_blacklist, const MacroToken& origin) const
 	{
 		vector<MacroToken> out;
 		vector<MacroToken> current_piece;
@@ -628,6 +669,8 @@ struct MacroProcessor
 
 			MacroToken copied = macro.replacement[i];
 			copied.blacklist.insert(add_blacklist.begin(), add_blacklist.end());
+			copied.file = origin.file;
+			copied.line = origin.line;
 			vector<MacroToken> piece(1, copied);
 			++i;
 
@@ -667,6 +710,23 @@ struct MacroProcessor
 				continue;
 			}
 
+			if (seq[i].source == "__LINE__" && seq[i].line > 0)
+			{
+				vector<MacroToken> replacement(1, MakeMacroToken(PPT_PP_NUMBER, to_string(seq[i].line)));
+				StampOrigin(replacement, seq[i]);
+				seq.erase(seq.begin() + i, seq.begin() + i + 1);
+				seq.insert(seq.begin() + i, replacement.begin(), replacement.end());
+				continue;
+			}
+			if (seq[i].source == "__FILE__" && !seq[i].file.empty())
+			{
+				vector<MacroToken> replacement(1, MakeMacroToken(PPT_STRING_LITERAL, QuoteMacroStringLiteral(seq[i].file)));
+				StampOrigin(replacement, seq[i]);
+				seq.erase(seq.begin() + i, seq.begin() + i + 1);
+				seq.insert(seq.begin() + i, replacement.begin(), replacement.end());
+				continue;
+			}
+
 			auto it = macros.find(seq[i].source);
 			if (it == macros.end())
 			{
@@ -693,8 +753,8 @@ struct MacroProcessor
 			}
 
 			vector<MacroToken> replacement = macro.function_like
-				? ExpandFunctionReplacement(macro, args, add_blacklist)
-				: ExpandObjectReplacement(macro, add_blacklist);
+				? ExpandFunctionReplacement(macro, args, add_blacklist, seq[i])
+				: ExpandObjectReplacement(macro, add_blacklist, seq[i]);
 
 			seq.erase(seq.begin() + i, seq.begin() + invoke_end);
 			seq.insert(seq.begin() + i, replacement.begin(), replacement.end());
@@ -863,6 +923,7 @@ struct MacroProcessor
 	}
 };
 
+#ifndef CPPGM_EMBED_MACRO
 int main()
 {
 	try
@@ -969,3 +1030,4 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+#endif
