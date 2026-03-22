@@ -761,6 +761,10 @@ struct InitParser : Parser
 			unnamed = false;
 			name = ExpectIdentifier();
 		}
+		if (!unnamed && current->namespace_aliases.count(name) != 0)
+		{
+			errors.push_back(name + " already exists");
+		}
 		bool extending = (!unnamed && current->named_children.count(name) != 0);
 		if (extending && is_inline)
 		{
@@ -775,7 +779,21 @@ struct InitParser : Parser
 
 	void ParseNamespaceAliasDefinitionPA8(Namespace* current)
 	{
-		ParseNamespaceAliasDefinition(current);
+		ExpectTerm("KW_NAMESPACE");
+		string alias = ExpectIdentifier();
+		ExpectTerm("OP_ASS");
+		NameRef ref = ParseTypeNameReference();
+		if (current->named_children.count(alias) != 0)
+		{
+			errors.push_back(alias + " is an original-namespace-name");
+		}
+		else if (current->namespace_aliases.count(alias) != 0 || current->typedefs.count(alias) != 0)
+		{
+			errors.push_back(alias + " already exists");
+		}
+		Namespace* target = ResolveNamespaceReference(current, ref);
+		current->namespace_aliases[alias] = target;
+		ExpectTerm("OP_SEMICOLON");
 	}
 
 	void ParseUsingDirectivePA8(Namespace* current)
@@ -785,7 +803,38 @@ struct InitParser : Parser
 
 	void ParseUsingDeclarationPA8(Namespace* current)
 	{
-		ParseUsingDeclaration(current);
+		ExpectTerm("KW_USING");
+		NameRef prefix = ParseNestedNameSpecifier();
+		string name = ExpectIdentifier();
+		prefix.name = name;
+		TypePtr type = ResolveTypeReference(current, prefix);
+		if (type)
+		{
+			current->using_types[name] = type;
+			ExpectTerm("OP_SEMICOLON");
+			return;
+		}
+		Namespace* base = ResolveQualifier(current, prefix);
+		if (LookupNamespaceDirect(base, name) != NULL)
+		{
+			errors.push_back(name + " not found");
+			ExpectTerm("OP_SEMICOLON");
+			return;
+		}
+		map<string, size_t>::const_iterator vit = base->variable_index.find(name);
+		if (vit != base->variable_index.end())
+		{
+			ExpectTerm("OP_SEMICOLON");
+			return;
+		}
+		map<string, size_t>::const_iterator fit = base->function_index.find(name);
+		if (fit != base->function_index.end())
+		{
+			ExpectTerm("OP_SEMICOLON");
+			return;
+		}
+		errors.push_back(name + " not found");
+		ExpectTerm("OP_SEMICOLON");
 	}
 
 	void ParseAliasDeclarationPA8(Namespace* current)
