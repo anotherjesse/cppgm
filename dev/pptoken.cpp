@@ -330,6 +330,8 @@ namespace
 
 		if (j < in.size() && in[j] == 'R')
 		{
+			if (i > 0 && (in[i - 1] == '"' || is_identifier_continue(in[i - 1])))
+				return string::npos;
 			++j;
 		}
 		else if (i < in.size() && in[i] == 'R')
@@ -429,6 +431,13 @@ namespace
 		out.reserve(in.size());
 		for (size_t i = 0; i < in.size();)
 		{
+			size_t raw_end = find_raw_string_end(in, i);
+			if (raw_end != string::npos)
+			{
+				out.insert(out.end(), in.begin() + i, in.begin() + raw_end);
+				i = raw_end;
+				continue;
+			}
 			if (in[i] == '\\' && i + 1 < in.size() && in[i + 1] == '\n')
 			{
 				i += 2;
@@ -446,6 +455,13 @@ namespace
 		out.reserve(in.size());
 		for (size_t i = 0; i < in.size();)
 		{
+			size_t raw_end = find_raw_string_end(in, i);
+			if (raw_end != string::npos)
+			{
+				out.insert(out.end(), in.begin() + i, in.begin() + raw_end);
+				i = raw_end;
+				continue;
+			}
 			if (in[i] == '\\' && i + 1 < in.size() && (in[i + 1] == 'u' || in[i + 1] == 'U'))
 			{
 				size_t digits = (in[i + 1] == 'u') ? 4 : 8;
@@ -934,6 +950,22 @@ struct PPTokenizer
 					j = k;
 					return;
 				}
+				if (next == 'u' || next == 'U')
+				{
+					size_t digits = (next == 'u') ? 4 : 8;
+					if (j + 2 + digits > cps.size())
+						throw runtime_error("invalid universal character name");
+					uint32_t cp = 0;
+					for (size_t k = 0; k < digits; ++k)
+					{
+						uint32_t c = cps[j + 2 + k];
+						if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')))
+							throw runtime_error("invalid universal character name");
+						cp = (cp << 4) | static_cast<uint32_t>(HexCharToValue(c));
+					}
+					j += 2 + digits;
+					return;
+				}
 				if (next >= '0' && next <= '7')
 				{
 					size_t k = j + 1;
@@ -1036,6 +1068,7 @@ struct PPTokenizer
 	}
 };
 
+#ifndef CPPGM_PPTOKEN_LIBRARY
 int main()
 {
 	try
@@ -1063,3 +1096,4 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+#endif
