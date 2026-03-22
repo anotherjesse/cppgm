@@ -659,9 +659,15 @@ struct InitParser : Parser
 		NameRef ref = ParseIdExpression();
 		ExprValue out;
 		Namespace* target_ns = TargetNamespaceForName(current, ref);
-		string qn = QualifiedEntityName(target_ns, ref.name);
-		map<string, ExprValue>::const_iterator cit = constant_values.find(qn);
-		if (cit != constant_values.end()) return cit->second;
+			string qn = QualifiedEntityName(target_ns, ref.name);
+			map<string, ExprValue>::const_iterator cit = constant_values.find(qn);
+			if (cit != constant_values.end())
+			{
+				ExprValue cached = cit->second;
+				cached.entity_name = qn;
+				cached.is_lvalue = true;
+				return cached;
+			}
 		out.entity_name = qn;
 		out.is_lvalue = true;
 		map<string, size_t>::const_iterator vit = target_ns->variable_index.find(ref.name);
@@ -679,6 +685,85 @@ struct InitParser : Parser
 			return out;
 		}
 		throw runtime_error("unknown expression id");
+	}
+
+	long long ConstantExpressionToBound(const ExprValue& expr)
+	{
+		if (!expr.is_constant) throw runtime_error("array bound not constant");
+		uint64_t value = 0;
+		for (size_t i = 0; i < expr.bytes.size() && i < 8; ++i)
+		{
+			value |= static_cast<uint64_t>(static_cast<unsigned char>(expr.bytes[i])) << (8 * i);
+		}
+		if (value == 0) throw runtime_error("bad bound");
+		return static_cast<long long>(value);
+	}
+
+	vector<DeclaratorOp> ParseSuffixesPA8(Namespace* lookup_ns)
+	{
+		vector<DeclaratorOp> ops;
+		while (true)
+		{
+			if (Peek().term == "OP_LPAREN")
+			{
+				ops.push_back(ParseFunctionSuffix(lookup_ns));
+				continue;
+			}
+			if (AcceptTerm("OP_LSQUARE"))
+			{
+				long long bound = -1;
+				if (Peek().term != "OP_RSQUARE")
+				{
+					ExprValue expr = ParseExpressionValue(lookup_ns);
+					bound = ConstantExpressionToBound(expr);
+				}
+				ExpectTerm("OP_RSQUARE");
+				DeclaratorOp op;
+				op.kind = DeclaratorOp::ARRAY;
+				op.array_bound = bound;
+				op.is_const = false;
+				op.is_volatile = false;
+				op.variadic = false;
+				ops.push_back(op);
+				continue;
+			}
+			break;
+		}
+		return ops;
+	}
+
+	DeclaratorInfo ParseDeclaratorPA8(Namespace* current)
+	{
+		vector<DeclaratorOp> prefix;
+		while (Peek().term == "OP_STAR" || Peek().term == "OP_AMP" || Peek().term == "OP_LAND")
+		{
+			prefix.push_back(ParsePtrOperator());
+		}
+
+		DeclaratorInfo info;
+		if (AcceptTerm("OP_LPAREN"))
+		{
+			info = ParseDeclaratorPA8(current);
+			ExpectTerm("OP_RPAREN");
+		}
+		else
+		{
+			if (Peek().is_identifier || Peek().term == "OP_COLON2")
+			{
+				info.has_name = true;
+				info.name = ParseIdExpression();
+			}
+		}
+
+		Namespace* suffix_lookup = current;
+		if (info.has_name && (info.name.global || !info.name.qualifiers.empty()))
+		{
+			suffix_lookup = TargetNamespaceForName(current, info.name);
+		}
+		vector<DeclaratorOp> suffix = ParseSuffixesPA8(suffix_lookup);
+		info.ops.insert(info.ops.end(), suffix.begin(), suffix.end());
+		for (size_t i = prefix.size(); i > 0; --i) info.ops.push_back(prefix[i - 1]);
+		return info;
 	}
 
 	void EmitRecord(const ExtDeclSpec& spec, Namespace* current, const DeclaratorInfo& decl, bool defined, const ExprValue* init)
@@ -706,7 +791,7 @@ struct InitParser : Parser
 		rec.type = type;
 		rec.linkage = linkage;
 		rec.is_function = (type->kind == Type::FUNCTION);
-		rec.is_defined = defined || (init != NULL);
+		rec.is_defined = rec.is_function ? defined : !spec.storage_extern;
 		rec.is_declared = true;
 		rec.is_inline = spec.is_inline;
 		rec.is_thread_local = spec.storage_thread_local;
@@ -765,9 +850,26 @@ struct InitParser : Parser
 			bool cache_constant = false;
 			if (spec.is_constexpr) cache_constant = true;
 			else if (IsConstType(type) && rec.initializer.is_constant) cache_constant = true;
+			else if ((type->kind == Type::LVALUE_REF || type->kind == Type::RVALUE_REF) && rec.initializer.is_constant)
+			{
+				cache_constant = true;
+			}
+			else if ((type->kind == Type::LVALUE_REF || type->kind == Type::RVALUE_REF) && !rec.initializer.entity_name.empty() &&
+				constant_values.count(rec.initializer.entity_name) != 0)
+			{
+				cache_constant = true;
+			}
 			if (cache_constant)
 			{
 				ExprValue stored = rec.initializer;
+				if ((type->kind == Type::LVALUE_REF || type->kind == Type::RVALUE_REF) &&
+					!rec.initializer.entity_name.empty() &&
+					constant_values.count(rec.initializer.entity_name) != 0)
+				{
+					stored = constant_values[rec.initializer.entity_name];
+					stored.entity_name = rec.initializer.entity_name;
+					stored.is_lvalue = true;
+				}
 				stored.is_constant = true;
 				constant_values[qn] = stored;
 			}
@@ -807,7 +909,7 @@ struct InitParser : Parser
 		bool saw_function_body = false;
 		while (true)
 		{
-			DeclaratorInfo decl = ParseDeclarator(current);
+			DeclaratorInfo decl = ParseDeclaratorPA8(current);
 			Namespace* post_qualified_lookup = current;
 			if (decl.has_name && (decl.name.global || !decl.name.qualifiers.empty()))
 			{
