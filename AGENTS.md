@@ -93,7 +93,9 @@ work or immediately after. Each retrospective should cover:
 
 ## Implementation Guidance
 
-- Reuse and extend code from previous assignments instead of starting over.
+- Reuse and extend code from earlier assignments in this checkout, especially
+  shared code already present in `dev/` and `dev/src/`, instead of starting
+  over.
 - Include extra context in error cases when practical, especially filenames,
   line numbers, and the specific failing condition.
 - Periodically simplify, reorganize, and refactor shared code so later
@@ -141,4 +143,5 @@ work or immediately after. Each retrospective should cover:
 - Do not bulk-regenerate the checked-in `.ref` files under `tests/course/paN/`
   from the local `*-ref` binaries. Those shared fixtures are authoritative and
   may intentionally diverge from the reference binaries.
-- The project targets the C++11 standard, N3485, in `doc/`.
+- The project targets the C++11 standard, N3485. Use `doc/n3485.txt` for
+  search and quick reference.
