@@ -20,6 +20,8 @@ struct MacroToken
 	bool unavailable = false;
 	bool placemarker = false;
 	bool op_hashhash = false;
+	int line_no = 0;
+	string file_name;
 
 	MacroToken() {}
 	explicit MacroToken(const PPToken& pp) : pp(pp) {}
@@ -39,7 +41,7 @@ struct MacroDef
 };
 
 bool IsWs(const PPToken& pp) { return pp.kind == PPKind::Whitespace || pp.kind == PPKind::NewLine; }
-bool IsWs(const MacroToken& mt) { return IsWs(mt.pp); }
+bool IsWs(const MacroToken& mt) { return !mt.placemarker && IsWs(mt.pp); }
 bool IsId(const MacroToken& mt, const string& s) { return !mt.placemarker && mt.pp.kind == PPKind::Identifier && mt.pp.source == s; }
 
 vector<MacroToken> ToMacroTokens(const vector<PPToken>& in, size_t a, size_t b)
@@ -291,6 +293,7 @@ void EmitFromPP(const vector<PPToken>& pp, DebugPostTokenOutputStream& output)
 struct MacroProcessor
 {
 	unordered_map<string, MacroDef> macros;
+	bool enable_predefined = false;
 
 	size_t prev_non_ws(const vector<MacroToken>& v, size_t i) const
 	{
@@ -321,6 +324,27 @@ struct MacroProcessor
 			pending.pop_front();
 			if (!head.placemarker && head.pp.kind == PPKind::Identifier && head.pp.source == "__VA_ARGS__")
 				throw runtime_error("__VA_ARGS__ outside variadic macro");
+			if (enable_predefined && !head.placemarker && head.pp.kind == PPKind::Identifier && !head.unavailable && head.hidden.count(head.pp.source) == 0)
+			{
+				if (head.pp.source == "__LINE__")
+				{
+					MacroToken repl(PPToken{PPKind::PPNumber, to_string(head.line_no)});
+					repl.hidden = head.hidden;
+					repl.line_no = head.line_no;
+					repl.file_name = head.file_name;
+					out.push_back(repl);
+					continue;
+				}
+				if (head.pp.source == "__FILE__")
+				{
+					MacroToken repl(PPToken{PPKind::StringLiteral, "\"" + head.file_name + "\""});
+					repl.hidden = head.hidden;
+					repl.line_no = head.line_no;
+					repl.file_name = head.file_name;
+					out.push_back(repl);
+					continue;
+				}
+			}
 			if (head.placemarker || head.pp.kind != PPKind::Identifier || head.unavailable || (head.hidden.count(head.pp.source) == 0 && macros.find(head.pp.source) == macros.end()))
 			{
 				out.push_back(head);
@@ -494,6 +518,8 @@ struct MacroProcessor
 		{
 			tok.hidden = head.hidden;
 			tok.hidden.insert(head.pp.source);
+			tok.line_no = head.line_no;
+			tok.file_name = head.file_name;
 			if (!tok.placemarker && tok.pp.kind == PPKind::Identifier && tok.hidden.count(tok.pp.source))
 				tok.unavailable = true;
 		}

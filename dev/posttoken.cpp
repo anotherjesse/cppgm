@@ -665,6 +665,10 @@ struct PPToken
 {
 	PPKind kind;
 	string source;
+	int line_no;
+
+	PPToken() : kind(PPKind::Whitespace), line_no(0) {}
+	PPToken(PPKind kind, const string& source, int line_no = 0) : kind(kind), source(source), line_no(line_no) {}
 };
 
 int HexCharToValue(int c)
@@ -823,10 +827,13 @@ struct PPTokenizer
 	bool line_start = true;
 	int include_state = 0;
 	vector<PPToken> out;
+	int physical_line = 1;
 
 	int peek(size_t off = 0) const { size_t i = pos + off; return i < cps.size() ? cps[i].value : EndOfFile; }
 	string take() { return EncodeUTF8(cps[pos++].value); }
 	bool match(const string& s) const { for (size_t i = 0; i < s.size(); ++i) if (peek(i) != static_cast<unsigned char>(s[i])) return false; return true; }
+	void emit(PPKind kind, const string& source) { out.push_back({kind, source, physical_line}); }
+	int count_newlines(const string& s) const { return static_cast<int>(count(s.begin(), s.end(), '\n')); }
 
 	string scan_identifier() { string s; s += take(); while (IsIdentifierContinue(peek())) s += take(); return s; }
 	string scan_ppnum()
@@ -900,6 +907,11 @@ struct PPTokenizer
 	vector<PPToken> run(const string& input)
 	{
 		cps = Phase123(input);
+		pos = 0;
+		line_start = true;
+		include_state = 0;
+		out.clear();
+		physical_line = 1;
 		while (pos < cps.size())
 		{
 			bool ws = false;
@@ -908,40 +920,60 @@ struct PPTokenizer
 				ws = true;
 				if (IsWhitespaceNoNewline(peek())) while (IsWhitespaceNoNewline(peek())) ++pos;
 				else if (peek() == '/' && peek(1) == '/'){ pos += 2; while (peek() != EndOfFile && peek() != '\n') ++pos; }
-				else { pos += 2; while (!(peek() == '*' && peek(1) == '/')) { if (peek() == EndOfFile) throw runtime_error("unterminated comment"); ++pos; } pos += 2; }
+				else
+				{
+					pos += 2;
+					while (!(peek() == '*' && peek(1) == '/'))
+					{
+						if (peek() == EndOfFile) throw runtime_error("unterminated comment");
+						if (peek() == '\n') ++physical_line;
+						++pos;
+					}
+					pos += 2;
+				}
 			}
-			if (ws) { out.push_back({PPKind::Whitespace, ""}); continue; }
-			if (peek() == '\n') { ++pos; out.push_back({PPKind::NewLine, ""}); line_start = true; include_state = 0; continue; }
+			if (ws) { emit(PPKind::Whitespace, ""); continue; }
+			if (peek() == '\n') { emit(PPKind::NewLine, ""); ++pos; ++physical_line; line_start = true; include_state = 0; continue; }
 			if (include_state == 2 && (peek() == '<' || peek() == '"'))
 			{
 				string s; int end = peek() == '<' ? '>' : '"'; s += take();
 				while (peek() != end) { if (peek() == EndOfFile || peek() == '\n') throw runtime_error("unterminated header-name"); s += take(); }
-				s += take(); out.push_back({PPKind::HeaderName, s}); include_state = 0; line_start = false; continue;
+				s += take(); emit(PPKind::HeaderName, s); include_state = 0; line_start = false; continue;
 			}
-			if (peek() == '.' && IsDigit(peek(1))) { out.push_back({PPKind::PPNumber, scan_ppnum()}); include_state = 0; line_start = false; continue; }
-			if (IsDigit(peek())) { out.push_back({PPKind::PPNumber, scan_ppnum()}); include_state = 0; line_start = false; continue; }
-			if (is_raw_prefix()) { string s = scan_raw(); if (IsIdentifierInitial(peek())) out.push_back({PPKind::UserDefinedStringLiteral, s + scan_identifier()}); else out.push_back({PPKind::StringLiteral, s}); include_state = 0; line_start = false; continue; }
+			if (peek() == '.' && IsDigit(peek(1))) { emit(PPKind::PPNumber, scan_ppnum()); include_state = 0; line_start = false; continue; }
+			if (IsDigit(peek())) { emit(PPKind::PPNumber, scan_ppnum()); include_state = 0; line_start = false; continue; }
+			if (is_raw_prefix())
+			{
+				string s = scan_raw();
+				PPKind kind = IsIdentifierInitial(peek()) ? PPKind::UserDefinedStringLiteral : PPKind::StringLiteral;
+				string src = IsIdentifierInitial(peek()) ? s + scan_identifier() : s;
+				emit(kind, src);
+				physical_line += count_newlines(s);
+				include_state = 0;
+				line_start = false;
+				continue;
+			}
 			if (peek() == '"' || peek() == '\'' || ((peek() == 'u' || peek() == 'U' || peek() == 'L') && (peek(1) == '"' || peek(1) == '\'')) || (match("u8") && peek(2) == '"'))
 			{
 				string s = scan_quoted(); bool is_char = s[s[0] == 'u' || s[0] == 'U' || s[0] == 'L' ? 1 : (s.size() >= 2 && s[0] == 'u' && s[1] == '8' ? 2 : 0)] == '\'';
-				if (IsIdentifierInitial(peek())) out.push_back({is_char ? PPKind::UserDefinedCharacterLiteral : PPKind::UserDefinedStringLiteral, s + scan_identifier()});
-				else out.push_back({is_char ? PPKind::CharacterLiteral : PPKind::StringLiteral, s});
+				if (IsIdentifierInitial(peek())) emit(is_char ? PPKind::UserDefinedCharacterLiteral : PPKind::UserDefinedStringLiteral, s + scan_identifier());
+				else emit(is_char ? PPKind::CharacterLiteral : PPKind::StringLiteral, s);
 				include_state = 0; line_start = false; continue;
 			}
 			if (IsIdentifierInitial(peek()))
 			{
 				string s = scan_identifier();
-				out.push_back({PPKind::Identifier, s});
+				emit(PPKind::Identifier, s);
 				include_state = (include_state == 1 && s == "include") ? 2 : 0;
 				line_start = false;
 				continue;
 			}
 			static const vector<string> ops = {"%:%:", "...", ">>=", "<<=", "->*", ".*", "->", "++", "--", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "+=", "-=", "*=", "/=", "%=", "^=", "&=", "|=", "::", "##", "<:", ":>", "<%", "%>", "%:", "{", "}", "[", "]", "#", "(", ")", ";", ":", "?", ".", "+", "-", "*", "/", "%", "^", "&", "|", "~", "!", "=", "<", ">", ","};
-			if (match("<::") && peek(3) != ':' && peek(3) != '>') { out.push_back({PPKind::PreprocessingOpOrPunc, take()}); include_state = 0; line_start = false; continue; }
+			if (match("<::") && peek(3) != ':' && peek(3) != '>') { emit(PPKind::PreprocessingOpOrPunc, take()); include_state = 0; line_start = false; continue; }
 			bool found = false;
-			for (const string& op : ops) if (match(op)) { string s; for (size_t i = 0; i < op.size(); ++i) s += take(); out.push_back({PPKind::PreprocessingOpOrPunc, s}); include_state = (line_start && (s == "#" || s == "%:")) ? 1 : 0; line_start = false; found = true; break; }
+			for (const string& op : ops) if (match(op)) { string s; for (size_t i = 0; i < op.size(); ++i) s += take(); emit(PPKind::PreprocessingOpOrPunc, s); include_state = (line_start && (s == "#" || s == "%:")) ? 1 : 0; line_start = false; found = true; break; }
 			if (found) continue;
-			out.push_back({PPKind::NonWhitespaceCharacter, take()}); include_state = 0; line_start = false;
+			emit(PPKind::NonWhitespaceCharacter, take()); include_state = 0; line_start = false;
 		}
 		return out;
 	}
