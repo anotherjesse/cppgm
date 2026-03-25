@@ -52,55 +52,273 @@ vector<string> PA5StdIncPaths =
 #include "macro.cpp"
 #undef CPPGM_MACRO_EMBED
 
+struct CondFrame
+{
+	bool parent_active;
+	bool active;
+	bool seen_true;
+	bool saw_else;
+};
+
+struct ExprParser
+{
+	vector<PPToken> toks;
+	size_t pos = 0;
+
+	bool eof() const { return pos >= toks.size(); }
+	bool match(const string& s)
+	{
+		if (!eof() && toks[pos].kind == PPKind::PreprocessingOpOrPunc && toks[pos].source == s) { ++pos; return true; }
+		return false;
+	}
+	bool match_id(const string& s)
+	{
+		if (!eof() && toks[pos].kind == PPKind::Identifier && toks[pos].source == s) { ++pos; return true; }
+		return false;
+	}
+	long long primary()
+	{
+		if (match("("))
+		{
+			long long v = expr();
+			if (!match(")")) throw runtime_error("bad #if");
+			return v;
+		}
+		if (match_id("defined"))
+		{
+			string name;
+			if (match("("))
+			{
+				if (eof() || toks[pos].kind != PPKind::Identifier) throw runtime_error("bad #if");
+				name = toks[pos++].source;
+				if (!match(")")) throw runtime_error("bad #if");
+			}
+			else
+			{
+				if (eof() || toks[pos].kind != PPKind::Identifier) throw runtime_error("bad #if");
+				name = toks[pos++].source;
+			}
+			return name.empty() ? 0 : 1;
+		}
+		if (eof()) throw runtime_error("bad #if");
+		if (toks[pos].kind == PPKind::Identifier)
+		{
+			string name = toks[pos++].source;
+			if (name == "true") return 1;
+			if (name == "false") return 0;
+			return 0;
+		}
+		if (toks[pos].kind == PPKind::PPNumber)
+		{
+			string prefix, uds; EFundamentalType type; vector<unsigned char> bytes;
+			if (!parse_integer_literal(toks[pos].source, prefix, uds, type, bytes) || !uds.empty())
+				throw runtime_error("bad #if");
+			++pos;
+			if (type == FT_INT) { int v; memcpy(&v, bytes.data(), sizeof(v)); return v; }
+			if (type == FT_LONG_INT) { long v; memcpy(&v, bytes.data(), sizeof(v)); return v; }
+			if (type == FT_LONG_LONG_INT) { long long v; memcpy(&v, bytes.data(), sizeof(v)); return v; }
+			if (type == FT_UNSIGNED_INT) { unsigned int v; memcpy(&v, bytes.data(), sizeof(v)); return v; }
+			if (type == FT_UNSIGNED_LONG_INT) { unsigned long v; memcpy(&v, bytes.data(), sizeof(v)); return v; }
+			if (type == FT_UNSIGNED_LONG_LONG_INT) { unsigned long long v; memcpy(&v, bytes.data(), sizeof(v)); return v; }
+			return 0;
+		}
+		throw runtime_error("bad #if");
+	}
+	long long unary()
+	{
+		if (match("+")) return unary();
+		if (match("-")) return -unary();
+		if (match("!")) return !unary();
+		if (match("~")) return ~unary();
+		return primary();
+	}
+	long long mul()
+	{
+		long long v = unary();
+		while (true)
+		{
+			if (match("*")) v = v * unary();
+			else if (match("/")) { long long r = unary(); if (!r) throw runtime_error("bad #if"); v = v / r; }
+			else if (match("%")) { long long r = unary(); if (!r) throw runtime_error("bad #if"); v = v % r; }
+			else break;
+		}
+		return v;
+	}
+	long long add()
+	{
+		long long v = mul();
+		while (true)
+		{
+			if (match("+")) v += mul();
+			else if (match("-")) v -= mul();
+			else break;
+		}
+		return v;
+	}
+	long long rel()
+	{
+		long long v = add();
+		while (true)
+		{
+			if (match("<")) v = v < add();
+			else if (match(">")) v = v > add();
+			else if (match("<=")) v = v <= add();
+			else if (match(">=")) v = v >= add();
+			else break;
+		}
+		return v;
+	}
+	long long eq()
+	{
+		long long v = rel();
+		while (true)
+		{
+			if (match("==")) v = v == rel();
+			else if (match("!=")) v = v != rel();
+			else break;
+		}
+		return v;
+	}
+	long long land()
+	{
+		long long v = eq();
+		while (match("&&")) v = (v && eq());
+		return v;
+	}
+	long long expr()
+	{
+		long long v = land();
+		while (match("||")) v = (v || land());
+		return v;
+	}
+};
+
+bool eval_if_expr(MacroProcessor& proc, const vector<PPToken>& line, size_t begin, size_t end)
+{
+	vector<MacroToken> text = ToMacroTokens(line, begin, end);
+	vector<MacroToken> expanded = proc.expand_text(text);
+	vector<PPToken> pp;
+	for (const MacroToken& t : expanded)
+		if (t.pp.kind != PPKind::Whitespace && t.pp.kind != PPKind::NewLine)
+			pp.push_back(t.pp);
+	ExprParser parser;
+	parser.toks = pp;
+	long long v = parser.expr();
+	if (!parser.eof()) throw runtime_error("bad #if");
+	return v != 0;
+}
+
 vector<PPToken> preprocess_text_basic(const string& input)
 {
 	PPTokenizer tokenizer;
 	vector<PPToken> toks = tokenizer.run(input);
 	MacroProcessor proc;
 	vector<PPToken> final_pp;
+	vector<CondFrame> conds;
 	size_t i = 0;
 	while (i < toks.size())
 	{
-		bool at_directive = (i == 0 || toks[i - 1].kind == PPKind::NewLine);
+		size_t line_end = i;
+		while (line_end < toks.size() && toks[line_end].kind != PPKind::NewLine) ++line_end;
+		bool has_nl = line_end < toks.size();
+		bool current_active = true;
+		for (const CondFrame& f : conds) current_active = current_active && f.active;
+		bool at_directive = true;
 		if (at_directive)
 		{
 			size_t j = i;
-			while (j < toks.size() && toks[j].kind == PPKind::Whitespace) ++j;
-			if (j < toks.size() && toks[j].kind == PPKind::PreprocessingOpOrPunc && (toks[j].source == "#" || toks[j].source == "%:"))
+			while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
+			if (j < line_end && toks[j].kind == PPKind::PreprocessingOpOrPunc && (toks[j].source == "#" || toks[j].source == "%:"))
 			{
 				++j;
-				while (j < toks.size() && toks[j].kind == PPKind::Whitespace) ++j;
-				if (j >= toks.size() || toks[j].kind == PPKind::NewLine)
+				while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
+				if (j >= line_end)
 				{
-					while (j < toks.size() && toks[j].kind != PPKind::NewLine) ++j;
-					i = j + (j < toks.size());
+					i = line_end + has_nl;
 					continue;
 				}
 				if (toks[j].kind != PPKind::Identifier)
-					throw runtime_error("non-directive");
+				{
+					if (current_active) throw runtime_error("non-directive");
+					i = line_end + has_nl;
+					continue;
+				}
 				string directive = toks[j++].source;
+				if (directive == "if")
+				{
+					bool parent = current_active;
+					bool value = false;
+					if (parent) value = eval_if_expr(proc, toks, j, line_end);
+					conds.push_back({parent, parent && value, parent && value, false});
+					i = line_end + has_nl;
+					continue;
+				}
+				if (directive == "ifdef" || directive == "ifndef")
+				{
+					bool parent = current_active;
+					while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
+					if (j >= line_end || toks[j].kind != PPKind::Identifier) throw runtime_error("identifier missing");
+					bool def = proc.macros.find(toks[j].source) != proc.macros.end();
+					bool value = directive == "ifdef" ? def : !def;
+					conds.push_back({parent, parent && value, parent && value, false});
+					i = line_end + has_nl;
+					continue;
+				}
+				if (directive == "elif")
+				{
+					if (conds.empty() || conds.back().saw_else) throw runtime_error("unexpected #elif");
+					CondFrame& f = conds.back();
+					bool value = false;
+					if (f.parent_active && !f.seen_true) value = eval_if_expr(proc, toks, j, line_end);
+					f.active = f.parent_active && !f.seen_true && value;
+					f.seen_true = f.seen_true || f.active;
+					i = line_end + has_nl;
+					continue;
+				}
+				if (directive == "else")
+				{
+					if (conds.empty() || conds.back().saw_else) throw runtime_error("unexpected #else");
+					CondFrame& f = conds.back();
+					f.saw_else = true;
+					f.active = f.parent_active && !f.seen_true;
+					f.seen_true = true;
+					i = line_end + has_nl;
+					continue;
+				}
+				if (directive == "endif")
+				{
+					if (conds.empty()) throw runtime_error("unexpected #endif");
+					conds.pop_back();
+					i = line_end + has_nl;
+					continue;
+				}
+				if (!current_active)
+				{
+					i = line_end + has_nl;
+					continue;
+				}
 				if (directive == "define")
 				{
-					while (j < toks.size() && toks[j].kind == PPKind::Whitespace) ++j;
-					if (j >= toks.size() || toks[j].kind != PPKind::Identifier) throw runtime_error("identifier missing");
+					while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
+					if (j >= line_end || toks[j].kind != PPKind::Identifier) throw runtime_error("identifier missing");
 					string name = toks[j++].source;
 					if (name == "__VA_ARGS__") throw runtime_error("bad variadic macro");
 					MacroDef def;
-					if (j < toks.size() && toks[j].kind == PPKind::PreprocessingOpOrPunc && toks[j].source == "(")
+					if (j < line_end && toks[j].kind == PPKind::PreprocessingOpOrPunc && toks[j].source == "(")
 					{
 						def.function_like = true;
 						++j;
-						while (j < toks.size())
+						while (j < line_end)
 						{
-							while (j < toks.size() && toks[j].kind == PPKind::Whitespace) ++j;
-							if (j >= toks.size()) throw runtime_error("unterminated define");
+							while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
+							if (j >= line_end) throw runtime_error("unterminated define");
 							if (toks[j].kind == PPKind::PreprocessingOpOrPunc && toks[j].source == ")") { ++j; break; }
 							if (toks[j].kind == PPKind::PreprocessingOpOrPunc && toks[j].source == "...")
 							{
 								def.variadic = true;
 								++j;
-								while (j < toks.size() && toks[j].kind == PPKind::Whitespace) ++j;
-								if (j >= toks.size() || toks[j].kind != PPKind::PreprocessingOpOrPunc || toks[j].source != ")") throw runtime_error("bad variadic macro");
+								while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
+								if (j >= line_end || toks[j].kind != PPKind::PreprocessingOpOrPunc || toks[j].source != ")") throw runtime_error("bad variadic macro");
 								++j;
 								break;
 							}
@@ -109,33 +327,31 @@ vector<PPToken> preprocess_text_basic(const string& input)
 							if (param == "__VA_ARGS__") throw runtime_error("bad variadic macro");
 							if (find(def.params.begin(), def.params.end(), param) != def.params.end()) throw runtime_error("duplicate parameter " + param + " in macro definition");
 							def.params.push_back(param);
-							while (j < toks.size() && toks[j].kind == PPKind::Whitespace) ++j;
-							if (j < toks.size() && toks[j].kind == PPKind::PreprocessingOpOrPunc && toks[j].source == ",")
+							while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
+							if (j < line_end && toks[j].kind == PPKind::PreprocessingOpOrPunc && toks[j].source == ",")
 							{
 								++j;
-								while (j < toks.size() && toks[j].kind == PPKind::Whitespace) ++j;
-								if (j < toks.size() && toks[j].kind == PPKind::PreprocessingOpOrPunc && toks[j].source == "...")
+								while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
+								if (j < line_end && toks[j].kind == PPKind::PreprocessingOpOrPunc && toks[j].source == "...")
 								{
 									def.variadic = true;
 									++j;
-									while (j < toks.size() && toks[j].kind == PPKind::Whitespace) ++j;
-									if (j >= toks.size() || toks[j].kind != PPKind::PreprocessingOpOrPunc || toks[j].source != ")") throw runtime_error("bad variadic macro");
+									while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
+									if (j >= line_end || toks[j].kind != PPKind::PreprocessingOpOrPunc || toks[j].source != ")") throw runtime_error("bad variadic macro");
 									++j;
 									break;
 								}
 								continue;
 							}
-							if (j < toks.size() && toks[j].kind == PPKind::PreprocessingOpOrPunc && toks[j].source == ")") { ++j; break; }
+							if (j < line_end && toks[j].kind == PPKind::PreprocessingOpOrPunc && toks[j].source == ")") { ++j; break; }
 							throw runtime_error("bad parameter list");
 						}
 					}
-					else if (j < toks.size() && toks[j].kind == PPKind::Whitespace)
+					else if (j < line_end && toks[j].kind == PPKind::Whitespace)
 					{
-						while (j < toks.size() && toks[j].kind == PPKind::Whitespace) ++j;
+						while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
 					}
-					size_t end = j;
-					while (end < toks.size() && toks[end].kind != PPKind::NewLine) ++end;
-					def.replacement = ToMacroTokens(toks, j, end);
+					def.replacement = ToMacroTokens(toks, j, line_end);
 					if (!def.variadic)
 					{
 						for (const MacroToken& tok : def.replacement)
@@ -144,19 +360,19 @@ vector<PPToken> preprocess_text_basic(const string& input)
 					}
 					ValidateReplacement(def);
 					proc.define_macro(name, def);
-					i = end + (end < toks.size());
+					i = line_end + has_nl;
 					continue;
 				}
 				if (directive == "undef")
 				{
-					while (j < toks.size() && toks[j].kind == PPKind::Whitespace) ++j;
-					if (j >= toks.size() || toks[j].kind != PPKind::Identifier) throw runtime_error("identifier missing");
+					while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
+					if (j >= line_end || toks[j].kind != PPKind::Identifier) throw runtime_error("identifier missing");
 					string name = toks[j++].source;
 					if (name == "__VA_ARGS__") throw runtime_error("bad variadic macro");
-					while (j < toks.size() && toks[j].kind == PPKind::Whitespace) ++j;
-					if (j < toks.size() && toks[j].kind != PPKind::NewLine) throw runtime_error("extra tokens after undef");
+					while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
+					if (j < line_end) throw runtime_error("extra tokens after undef");
 					proc.macros.erase(name);
-					i = j + (j < toks.size());
+					i = line_end + has_nl;
 					continue;
 				}
 				if (directive == "error")
@@ -166,24 +382,17 @@ vector<PPToken> preprocess_text_basic(const string& input)
 				throw runtime_error("non-directive");
 			}
 		}
-		size_t end = i;
-		while (end < toks.size())
+		if (current_active)
 		{
-			if (end == i ? false : toks[end - 1].kind == PPKind::NewLine)
-			{
-				size_t k = end;
-				while (k < toks.size() && toks[k].kind == PPKind::Whitespace) ++k;
-				if (k < toks.size() && toks[k].kind == PPKind::PreprocessingOpOrPunc && (toks[k].source == "#" || toks[k].source == "%:"))
-					break;
-			}
-			++end;
+			vector<MacroToken> text = ToMacroTokens(toks, i, line_end);
+			vector<MacroToken> expanded = proc.expand_text(text);
+			for (const MacroToken& t : expanded)
+				final_pp.push_back(t.pp);
+			if (has_nl) final_pp.push_back(PPToken{PPKind::NewLine, ""});
 		}
-		vector<MacroToken> text = ToMacroTokens(toks, i, end);
-		vector<MacroToken> expanded = proc.expand_text(text);
-		for (const MacroToken& t : expanded)
-			final_pp.push_back(t.pp);
-		i = end;
+		i = line_end + has_nl;
 	}
+	if (!conds.empty()) throw runtime_error("unterminated #if");
 	return final_pp;
 }
 
