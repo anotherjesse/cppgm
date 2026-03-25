@@ -812,8 +812,9 @@ vector<CodePoint> Phase123(const string& input)
 	return out;
 }
 
-bool IsIdentifierInitial(int cp) { return IsNondigit(cp) || cp >= 0x80; }
-bool IsIdentifierContinue(int cp) { return IsIdentifierInitial(cp) || IsDigit(cp); }
+bool IsCombiningMark(int cp) { return 0x300 <= cp && cp <= 0x36F; }
+bool IsIdentifierInitial(int cp) { return IsNondigit(cp) || (cp >= 0x80 && !IsCombiningMark(cp)); }
+bool IsIdentifierContinue(int cp) { return IsIdentifierInitial(cp) || IsDigit(cp) || IsCombiningMark(cp); }
 
 struct PPTokenizer
 {
@@ -841,7 +842,7 @@ struct PPTokenizer
 				s += take();
 				if (peek() == '+' || peek() == '-') s += take();
 			}
-			else if (IsNondigit(cp)) s += take();
+			else if (IsIdentifierContinue(cp)) s += take();
 			else break;
 		}
 		return s;
@@ -1044,6 +1045,19 @@ pair<string, string> split_ud_suffix(const string& s)
 			bool ok = true;
 			for (size_t j = i + 1; j < s.size(); ++j)
 				if (!IsIdentifierContinue(static_cast<unsigned char>(s[j])))
+					ok = false;
+			if (ok)
+				return make_pair(s.substr(0, i), s.substr(i));
+			return make_pair(s, "");
+		}
+	for (size_t i = 0; i < s.size(); ++i)
+		if (s[i] == '_' && i + 1 < s.size() && static_cast<unsigned char>(s[i + 1]) >= 0x80)
+		{
+			bool ok = true;
+			vector<int> cps = DecodeUTF8(s.substr(i + 1));
+			if (cps.empty()) ok = false;
+			for (int cp : cps)
+				if (!IsIdentifierContinue(cp))
 					ok = false;
 			if (ok)
 				return make_pair(s.substr(0, i), s.substr(i));
