@@ -19,6 +19,8 @@ struct NamespaceNode
 	string name;
 	bool named = false;
 	bool inline_ns = false;
+	vector<pair<string, string>> variables;
+	vector<pair<string, string>> functions;
 	vector<unique_ptr<NamespaceNode>> children;
 
 	NamespaceNode() {}
@@ -68,6 +70,76 @@ struct Parser
 		if (eof() || peek().kind != PPKind::Identifier) throw runtime_error("identifier expected");
 		return toks[pos++].source;
 	}
+	bool is_decl_kw(const string& s) const
+	{
+		static const vector<string> kws = {"typedef", "static", "thread_local", "extern", "const", "volatile", "char", "char16_t", "char32_t", "wchar_t", "bool", "short", "int", "long", "signed", "unsigned", "float", "double", "void"};
+		return find(kws.begin(), kws.end(), s) != kws.end();
+	}
+	string parse_decl_specifier_seq(bool& is_typedef)
+	{
+		vector<string> specs;
+		is_typedef = false;
+		while (!eof() && peek().kind == PPKind::Identifier && is_decl_kw(peek().source))
+		{
+			if (peek().source == "typedef") is_typedef = true;
+			else specs.push_back(peek().source);
+			++pos;
+		}
+		if (specs.empty() && !is_typedef) throw runtime_error("decl-specifier expected");
+		bool is_const = false, is_volatile = false;
+		int n_short = 0, n_long = 0, n_signed = 0, n_unsigned = 0, n_int = 0;
+		string atom;
+		for (const string& s : specs)
+		{
+			if (s == "const") is_const = true;
+			else if (s == "volatile") is_volatile = true;
+			else if (s == "short") ++n_short;
+			else if (s == "long") ++n_long;
+			else if (s == "signed") ++n_signed;
+			else if (s == "unsigned") ++n_unsigned;
+			else if (s == "int") ++n_int;
+			else if (s == "char" || s == "char16_t" || s == "char32_t" || s == "wchar_t" || s == "bool" || s == "float" || s == "double" || s == "void")
+				atom = s;
+			else throw runtime_error("unsupported decl-specifier");
+		}
+		string base;
+		if (atom == "char")
+		{
+			if (n_unsigned) base = "unsigned char";
+			else if (n_signed) base = "signed char";
+			else base = "char";
+		}
+		else if (!atom.empty() && atom != "double")
+			base = atom;
+		else if (atom == "double")
+			base = n_long ? "long double" : "double";
+		else if (n_short)
+			base = (n_unsigned ? "unsigned short int" : "short int");
+		else if (n_long >= 2)
+			base = (n_unsigned ? "unsigned long long int" : "long long int");
+		else if (n_long == 1)
+			base = (n_unsigned ? "unsigned long int" : "long int");
+		else
+			base = n_unsigned ? "unsigned int" : "int";
+		if (is_const && is_volatile) return "const volatile " + base;
+		if (is_const) return "const " + base;
+		if (is_volatile) return "volatile " + base;
+		return base;
+	}
+	pair<string, string> parse_simple_declarator(const string& base)
+	{
+		string type = base;
+		while (true)
+		{
+			if (match_punc("*")) type = "pointer to " + type;
+			else if (match_punc("&")) type = "lvalue-reference to " + type;
+			else if (match_punc("&&")) type = "rvalue-reference to " + type;
+			else break;
+		}
+		string name = expect_identifier();
+		if (peek().kind == PPKind::PreprocessingOpOrPunc && (peek().source == "(" || peek().source == "[")) throw runtime_error("unsupported declarator");
+		return make_pair(name, type);
+	}
 
 	NamespaceNode* get_or_add_named_namespace(NamespaceNode& cur, const string& name, bool inline_ns)
 	{
@@ -115,7 +187,15 @@ struct Parser
 			}
 			return;
 		}
-		throw runtime_error("unsupported declaration");
+		bool is_typedef = false;
+		string base = parse_decl_specifier_seq(is_typedef);
+		vector<pair<string, string>> decls;
+		decls.push_back(parse_simple_declarator(base));
+		while (match_punc(","))
+			decls.push_back(parse_simple_declarator(base));
+		if (!match_punc(";")) throw runtime_error("; expected");
+		if (!is_typedef)
+			cur.variables.insert(cur.variables.end(), decls.begin(), decls.end());
 	}
 
 	NamespaceNode parse_translation_unit()
@@ -132,6 +212,10 @@ void EmitNamespace(ostream& out, const NamespaceNode& ns)
 	if (ns.named) out << "start namespace " << ns.name << endl;
 	else out << "start unnamed namespace" << endl;
 	if (ns.inline_ns) out << "inline namespace" << endl;
+	for (const auto& var : ns.variables)
+		out << "variable " << var.first << " " << var.second << endl;
+	for (const auto& fn : ns.functions)
+		out << "function " << fn.first << " " << fn.second << endl;
 	for (const auto& child : ns.children)
 		EmitNamespace(out, *child);
 	out << "end namespace" << endl;
