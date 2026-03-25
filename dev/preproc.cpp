@@ -64,6 +64,7 @@ struct ExprParser
 {
 	vector<PPToken> toks;
 	size_t pos = 0;
+	const MacroProcessor* proc = nullptr;
 
 	bool eof() const { return pos >= toks.size(); }
 	bool match(const string& s)
@@ -98,7 +99,7 @@ struct ExprParser
 				if (eof() || toks[pos].kind != PPKind::Identifier) throw runtime_error("bad #if");
 				name = toks[pos++].source;
 			}
-			return name.empty() ? 0 : 1;
+			return (proc && proc->macros.find(name) != proc->macros.end()) ? 1 : 0;
 		}
 		if (eof()) throw runtime_error("bad #if");
 		if (toks[pos].kind == PPKind::Identifier)
@@ -203,16 +204,53 @@ bool eval_if_expr(MacroProcessor& proc, const vector<PPToken>& line, size_t begi
 			pp.push_back(t.pp);
 	ExprParser parser;
 	parser.toks = pp;
+	parser.proc = &proc;
 	long long v = parser.expr();
 	if (!parser.eof()) throw runtime_error("bad #if");
 	return v != 0;
 }
 
-vector<PPToken> preprocess_text_basic(const string& input)
+string DirOf(const string& path)
+{
+	size_t slash = path.rfind('/');
+	return slash == string::npos ? "" : path.substr(0, slash + 1);
+}
+
+string HeaderNameToPath(const string& s)
+{
+	return s.size() >= 2 ? s.substr(1, s.size() - 2) : "";
+}
+
+string StringLiteralToPath(const string& s)
+{
+	StringData data; string uds; bool is_char = false;
+	if (!decode_string_or_char(s, false, data, uds, is_char) || is_char || data.type != FT_CHAR) throw runtime_error("bad include");
+	if (data.bytes.empty()) return "";
+	return string(data.bytes.begin(), data.bytes.end() - 1);
+}
+
+bool ReadFileText(const string& path, string& out)
+{
+	ifstream in(path.c_str(), ios::binary);
+	if (!in) return false;
+	ostringstream oss;
+	oss << in.rdbuf();
+	out = oss.str();
+	return true;
+}
+
+vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc, const string& current_file);
+vector<PPToken> preprocess_file_basic(const string& path, MacroProcessor& proc)
+{
+	string text;
+	if (!ReadFileText(path, text)) throw runtime_error("could not open include file");
+	return preprocess_text_basic(text, proc, path);
+}
+
+vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc, const string& current_file)
 {
 	PPTokenizer tokenizer;
 	vector<PPToken> toks = tokenizer.run(input);
-	MacroProcessor proc;
 	vector<PPToken> final_pp;
 	vector<CondFrame> conds;
 	size_t i = 0;
@@ -375,9 +413,32 @@ vector<PPToken> preprocess_text_basic(const string& input)
 					i = line_end + has_nl;
 					continue;
 				}
+				if (directive == "include")
+				{
+					vector<MacroToken> text = ToMacroTokens(toks, j, line_end);
+					vector<MacroToken> expanded = proc.expand_text(text);
+					vector<PPToken> inc;
+					for (const MacroToken& t : expanded)
+						if (t.pp.kind != PPKind::Whitespace && t.pp.kind != PPKind::NewLine)
+							inc.push_back(t.pp);
+					if (inc.size() != 1) throw runtime_error("bad include");
+					string nextf;
+					if (inc[0].kind == PPKind::HeaderName) nextf = HeaderNameToPath(inc[0].source);
+					else if (inc[0].kind == PPKind::StringLiteral) nextf = StringLiteralToPath(inc[0].source);
+					else throw runtime_error("bad include");
+					string pathrel = DirOf(current_file) + nextf;
+					string usepath, tmp;
+					if (!pathrel.empty() && ReadFileText(pathrel, tmp)) usepath = pathrel;
+					else if (ReadFileText(nextf, tmp)) usepath = nextf;
+					else throw runtime_error("bad include");
+					vector<PPToken> nested = preprocess_text_basic(tmp, proc, usepath);
+					final_pp.insert(final_pp.end(), nested.begin(), nested.end());
+					i = line_end + has_nl;
+					continue;
+				}
 				if (directive == "error")
 					throw runtime_error("#error");
-				if (directive == "if" || directive == "ifdef" || directive == "ifndef" || directive == "elif" || directive == "else" || directive == "endif" || directive == "include" || directive == "line" || directive == "pragma")
+				if (directive == "if" || directive == "ifdef" || directive == "ifndef" || directive == "elif" || directive == "else" || directive == "endif" || directive == "line" || directive == "pragma")
 					throw runtime_error("pa5 directive not implemented");
 				throw runtime_error("non-directive");
 			}
@@ -406,6 +467,29 @@ void reject_obvious_invalid(const vector<PPToken>& pp)
 			(tok.source == "#" || tok.source == "##" || tok.source == "%:" || tok.source == "%:%:"))
 			throw runtime_error("invalid token");
 	}
+}
+
+MacroDef ObjectMacro(const string& body)
+{
+	PPTokenizer tok;
+	MacroDef def;
+	vector<PPToken> pp = tok.run(body);
+	def.replacement = ToMacroTokens(pp, 0, pp.size());
+	while (!def.replacement.empty() && (def.replacement.back().pp.kind == PPKind::Whitespace || def.replacement.back().pp.kind == PPKind::NewLine))
+		def.replacement.pop_back();
+	return def;
+}
+
+void SeedPredefinedMacros(MacroProcessor& proc, const string& current_file)
+{
+	proc.macros["__CPPGM__"] = ObjectMacro("201303L");
+	proc.macros["__cplusplus"] = ObjectMacro("201103L");
+	proc.macros["__STDC_HOSTED__"] = ObjectMacro("1");
+	proc.macros["__CPPGM_AUTHOR__"] = ObjectMacro("\"John Smith\"");
+	proc.macros["__FILE__"] = ObjectMacro("\"" + current_file + "\"");
+	proc.macros["__LINE__"] = ObjectMacro("1");
+	proc.macros["__DATE__"] = ObjectMacro("\"Jan 01 1970\"");
+	proc.macros["__TIME__"] = ObjectMacro("\"00:00:00\"");
 }
 
 int main(int argc, char** argv)
@@ -438,7 +522,9 @@ int main(int argc, char** argv)
 			ostringstream src;
 			src << in.rdbuf();
 
-			vector<PPToken> pp = preprocess_text_basic(src.str());
+			MacroProcessor proc;
+			SeedPredefinedMacros(proc, srcfile);
+			vector<PPToken> pp = preprocess_text_basic(src.str(), proc, srcfile);
 			reject_obvious_invalid(pp);
 
 			streambuf* old = cout.rdbuf(out.rdbuf());
