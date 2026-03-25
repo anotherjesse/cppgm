@@ -678,6 +678,7 @@ void SeedPredefinedMacros(MacroProcessor& proc, const string& current_file)
 	proc.macros["__TIME__"] = ObjectMacro("\"00:00:00\"");
 }
 
+#ifndef CPPGM_PREPROC_EMBED
 int main(int argc, char** argv)
 {
 	try
@@ -729,3 +730,4 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 }
+#endif
