@@ -289,6 +289,10 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 		size_t line_end = i;
 		while (line_end < toks.size() && toks[line_end].kind != PPKind::NewLine) ++line_end;
 		bool has_nl = line_end < toks.size();
+		auto advance_line = [&]() {
+			i = line_end + has_nl;
+			if (has_nl) ++line_no;
+		};
 		bool current_active = true;
 		for (const CondFrame& f : conds) current_active = current_active && f.active;
 		bool at_directive = true;
@@ -302,7 +306,7 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 				while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
 				if (j >= line_end)
 				{
-					i = line_end + has_nl;
+					advance_line();
 					continue;
 				}
 				if (toks[j].kind != PPKind::Identifier)
@@ -318,7 +322,7 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 					bool value = false;
 					if (parent) value = eval_if_expr(proc, toks, j, line_end, line_no);
 					conds.push_back({parent, parent && value, parent && value, false});
-					i = line_end + has_nl;
+					advance_line();
 					continue;
 				}
 				if (directive == "ifdef" || directive == "ifndef")
@@ -329,7 +333,7 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 					bool def = proc.macros.find(toks[j].source) != proc.macros.end();
 					bool value = directive == "ifdef" ? def : !def;
 					conds.push_back({parent, parent && value, parent && value, false});
-					i = line_end + has_nl;
+					advance_line();
 					continue;
 				}
 				if (directive == "elif")
@@ -340,7 +344,7 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 					if (f.parent_active && !f.seen_true) value = eval_if_expr(proc, toks, j, line_end, line_no);
 					f.active = f.parent_active && !f.seen_true && value;
 					f.seen_true = f.seen_true || f.active;
-					i = line_end + has_nl;
+					advance_line();
 					continue;
 				}
 				if (directive == "else")
@@ -350,19 +354,19 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 					f.saw_else = true;
 					f.active = f.parent_active && !f.seen_true;
 					f.seen_true = true;
-					i = line_end + has_nl;
+					advance_line();
 					continue;
 				}
 				if (directive == "endif")
 				{
 					if (conds.empty()) throw runtime_error("unexpected #endif");
 					conds.pop_back();
-					i = line_end + has_nl;
+					advance_line();
 					continue;
 				}
 				if (!current_active)
 				{
-					i = line_end + has_nl;
+					advance_line();
 					continue;
 				}
 				if (directive == "define")
@@ -428,7 +432,7 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 					}
 					ValidateReplacement(def);
 					proc.define_macro(name, def);
-					i = line_end + has_nl;
+					advance_line();
 					continue;
 				}
 				if (directive == "undef")
@@ -440,7 +444,7 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 					while (j < line_end && toks[j].kind == PPKind::Whitespace) ++j;
 					if (j < line_end) throw runtime_error("extra tokens after undef");
 					proc.macros.erase(name);
-					i = line_end + has_nl;
+					advance_line();
 					continue;
 				}
 				if (directive == "include")
@@ -463,12 +467,12 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 					else throw runtime_error("bad include");
 					vector<PPToken> nested = preprocess_text_basic(tmp, proc, usepath);
 					final_pp.insert(final_pp.end(), nested.begin(), nested.end());
-					i = line_end + has_nl;
+					advance_line();
 					continue;
 				}
 				if (directive == "pragma")
 				{
-					i = line_end + has_nl;
+					advance_line();
 					continue;
 				}
 				if (directive == "error")
