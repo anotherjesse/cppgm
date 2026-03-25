@@ -255,6 +255,7 @@ bool ReadFileText(const string& path, string& out)
 }
 
 vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc, const string& current_file);
+vector<MacroToken> apply_pragma_ops(const vector<MacroToken>& in);
 vector<PPToken> preprocess_file_basic(const string& path, MacroProcessor& proc)
 {
 	string text;
@@ -458,9 +459,14 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 					i = line_end + has_nl;
 					continue;
 				}
+				if (directive == "pragma")
+				{
+					i = line_end + has_nl;
+					continue;
+				}
 				if (directive == "error")
 					throw runtime_error("#error");
-				if (directive == "if" || directive == "ifdef" || directive == "ifndef" || directive == "elif" || directive == "else" || directive == "endif" || directive == "line" || directive == "pragma")
+				if (directive == "if" || directive == "ifdef" || directive == "ifndef" || directive == "elif" || directive == "else" || directive == "endif" || directive == "line")
 					throw runtime_error("pa5 directive not implemented");
 				throw runtime_error("non-directive");
 			}
@@ -469,6 +475,7 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 		{
 			vector<MacroToken> text = ToMacroTokens(toks, i, line_end);
 			vector<MacroToken> expanded = proc.expand_text(text);
+			expanded = apply_pragma_ops(expanded);
 			for (const MacroToken& t : expanded)
 				final_pp.push_back(t.pp);
 			if (has_nl) final_pp.push_back(PPToken{PPKind::NewLine, ""});
@@ -489,6 +496,30 @@ void reject_obvious_invalid(const vector<PPToken>& pp)
 			(tok.source == "#" || tok.source == "##" || tok.source == "%:" || tok.source == "%:%:"))
 			throw runtime_error("invalid token");
 	}
+}
+
+vector<MacroToken> apply_pragma_ops(const vector<MacroToken>& in)
+{
+	vector<MacroToken> out;
+	for (size_t i = 0; i < in.size(); ++i)
+	{
+		if (in[i].pp.kind == PPKind::Identifier && in[i].pp.source == "_Pragma")
+		{
+			size_t j = i + 1;
+			while (j < in.size() && in[j].pp.kind == PPKind::Whitespace) ++j;
+			if (j >= in.size() || in[j].pp.kind != PPKind::PreprocessingOpOrPunc || in[j].pp.source != "(") throw runtime_error("bad _Pragma");
+			++j;
+			while (j < in.size() && in[j].pp.kind == PPKind::Whitespace) ++j;
+			if (j >= in.size() || in[j].pp.kind != PPKind::StringLiteral) throw runtime_error("bad _Pragma");
+			++j;
+			while (j < in.size() && in[j].pp.kind == PPKind::Whitespace) ++j;
+			if (j >= in.size() || in[j].pp.kind != PPKind::PreprocessingOpOrPunc || in[j].pp.source != ")") throw runtime_error("bad _Pragma");
+			i = j;
+			continue;
+		}
+		out.push_back(in[i]);
+	}
+	return out;
 }
 
 MacroDef ObjectMacro(const string& body)
