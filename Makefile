@@ -32,11 +32,18 @@ test: build
 
 test-report: build
 	@export KEEP_GOING=1; \
-	trap 'rm -f pa*/.test_failed .test_counts' EXIT INT TERM; \
+	tmpdir=$$(mktemp -d); \
+	trap "rm -f pa*/.test_failed .test_counts; rm -rf $$tmpdir" EXIT INT TERM; \
 	rm -f pa*/.test_failed .test_counts; \
 	for dir in $(SORTED_PAS); do \
-		echo "===== $$dir ====="; \
-		$(MAKE) -C $$dir CPGM_SKIP_DEV_REBUILD=1 test; \
+		( \
+			echo "===== $$dir =====" > "$$tmpdir/$$dir.out"; \
+			$(MAKE) -C $$dir CPGM_SKIP_DEV_REBUILD=1 test >> "$$tmpdir/$$dir.out" 2>&1 \
+		) & \
+	done; \
+	wait; \
+	for dir in $(SORTED_PAS); do \
+		cat "$$tmpdir/$$dir.out"; \
 	done; \
 	passed=$$(awk '{s+=$$1} END {print s}' .test_counts 2>/dev/null || echo 0); \
 	total=$$(awk '{s+=$$2} END {print s}' .test_counts 2>/dev/null || echo 0); \
