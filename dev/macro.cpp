@@ -516,6 +516,7 @@ struct MacroProcessor
 	}
 };
 
+#ifndef CPPGM_MACRO_EMBED
 int main()
 {
 	try
@@ -654,3 +655,4 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+#endif
