@@ -197,6 +197,21 @@ struct ExprParser
 bool eval_if_expr(MacroProcessor& proc, const vector<PPToken>& line, size_t begin, size_t end)
 {
 	vector<MacroToken> text = ToMacroTokens(line, begin, end);
+	for (size_t i = 0; i < text.size(); ++i)
+	{
+		if (text[i].pp.kind != PPKind::Identifier || text[i].pp.source != "defined") continue;
+		size_t j = i + 1;
+		while (j < text.size() && text[j].pp.kind == PPKind::Whitespace) ++j;
+		if (j < text.size() && text[j].pp.kind == PPKind::PreprocessingOpOrPunc && text[j].pp.source == "(")
+		{
+			++j;
+			while (j < text.size() && text[j].pp.kind == PPKind::Whitespace) ++j;
+			if (j < text.size() && text[j].pp.kind == PPKind::Identifier)
+				text[j].unavailable = true;
+		}
+		else if (j < text.size() && text[j].pp.kind == PPKind::Identifier)
+			text[j].unavailable = true;
+	}
 	vector<MacroToken> expanded = proc.expand_text(text);
 	vector<PPToken> pp;
 	for (const MacroToken& t : expanded)
@@ -251,6 +266,13 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 {
 	PPTokenizer tokenizer;
 	vector<PPToken> toks = tokenizer.run(input);
+	for (PPToken& tok : toks)
+	{
+		if (tok.kind == PPKind::PreprocessingOpOrPunc && tok.source == "%:")
+			tok.source = "#";
+		else if (tok.kind == PPKind::PreprocessingOpOrPunc && tok.source == "%:%:")
+			tok.source = "##";
+	}
 	vector<PPToken> final_pp;
 	vector<CondFrame> conds;
 	size_t i = 0;
