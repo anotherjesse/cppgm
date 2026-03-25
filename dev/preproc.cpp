@@ -256,6 +256,7 @@ bool ReadFileText(const string& path, string& out)
 
 vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc, const string& current_file);
 vector<MacroToken> apply_pragma_ops(const vector<MacroToken>& in);
+MacroDef ObjectMacro(const string& body);
 vector<PPToken> preprocess_file_basic(const string& path, MacroProcessor& proc)
 {
 	string text;
@@ -277,8 +278,11 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 	vector<PPToken> final_pp;
 	vector<CondFrame> conds;
 	size_t i = 0;
+	int line_no = 1;
 	while (i < toks.size())
 	{
+		proc.macros["__FILE__"] = ObjectMacro("\"" + current_file + "\"");
+		proc.macros["__LINE__"] = ObjectMacro(to_string(line_no));
 		size_t line_end = i;
 		while (line_end < toks.size() && toks[line_end].kind != PPKind::NewLine) ++line_end;
 		bool has_nl = line_end < toks.size();
@@ -481,6 +485,7 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 			if (has_nl) final_pp.push_back(PPToken{PPKind::NewLine, ""});
 		}
 		i = line_end + has_nl;
+		if (has_nl) ++line_no;
 	}
 	if (!conds.empty()) throw runtime_error("unterminated #if");
 	return final_pp;
