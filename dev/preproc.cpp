@@ -194,9 +194,12 @@ struct ExprParser
 	}
 };
 
-bool eval_if_expr(MacroProcessor& proc, const vector<PPToken>& line, size_t begin, size_t end)
+bool eval_if_expr(MacroProcessor& proc, const vector<PPToken>& line, size_t begin, size_t end, int current_line_no)
 {
 	vector<MacroToken> text = ToMacroTokens(line, begin, end);
+	for (size_t i = 0; i < text.size(); ++i)
+		if (text[i].pp.kind == PPKind::Identifier && text[i].pp.source == "__LINE__")
+			text[i].pp = PPToken{PPKind::PPNumber, to_string(current_line_no)};
 	for (size_t i = 0; i < text.size(); ++i)
 	{
 		if (text[i].pp.kind != PPKind::Identifier || text[i].pp.source != "defined") continue;
@@ -313,7 +316,7 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 				{
 					bool parent = current_active;
 					bool value = false;
-					if (parent) value = eval_if_expr(proc, toks, j, line_end);
+					if (parent) value = eval_if_expr(proc, toks, j, line_end, line_no);
 					conds.push_back({parent, parent && value, parent && value, false});
 					i = line_end + has_nl;
 					continue;
@@ -334,7 +337,7 @@ vector<PPToken> preprocess_text_basic(const string& input, MacroProcessor& proc,
 					if (conds.empty() || conds.back().saw_else) throw runtime_error("unexpected #elif");
 					CondFrame& f = conds.back();
 					bool value = false;
-					if (f.parent_active && !f.seen_true) value = eval_if_expr(proc, toks, j, line_end);
+					if (f.parent_active && !f.seen_true) value = eval_if_expr(proc, toks, j, line_end, line_no);
 					f.active = f.parent_active && !f.seen_true && value;
 					f.seen_true = f.seen_true || f.active;
 					i = line_end + has_nl;
