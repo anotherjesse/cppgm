@@ -132,28 +132,1004 @@ const unordered_set<int> SimpleEscapeSequence_CodePoints =
 struct PPTokenizer
 {
 	IPPTokenStream& output;
+	string raw_input;
+	bool finished;
+	vector<int> source;
+	bool line_start;
+	bool directive_start;
+	bool include_pending;
+
+	enum class PendingToken
+	{
+		Whitespace,
+		NewLine
+	};
+
+	enum class TokenKind
+	{
+		Whitespace,
+		NewLine,
+		HeaderName,
+		Identifier,
+		PpNumber,
+		CharacterLiteral,
+		UserDefinedCharacterLiteral,
+		StringLiteral,
+		UserDefinedStringLiteral,
+		PreprocessingOpOrPunc,
+		NonWhitespaceCharacter
+	};
+
+	struct Scanner
+	{
+		const vector<int>* source;
+		size_t pos;
+		bool synthetic_newline_available;
+		bool synthetic_newline_emitted;
+
+		Scanner(const vector<int>& source)
+			: source(&source), pos(0),
+			  synthetic_newline_available(!source.empty() && source.back() != '\n'),
+			  synthetic_newline_emitted(false)
+		{}
+
+		int peek(size_t n) const
+		{
+			Scanner copy(*this);
+
+			int c = EndOfFile;
+			for (size_t i = 0; i <= n; ++i)
+			{
+				c = copy.next_normal();
+			}
+
+			return c;
+		}
+
+		int next_normal()
+		{
+			while (true)
+			{
+				if (pos >= source->size())
+				{
+					if (synthetic_newline_available && !synthetic_newline_emitted)
+					{
+						synthetic_newline_emitted = true;
+						return '\n';
+					}
+
+					return EndOfFile;
+				}
+
+				int c;
+				if (pos + 2 < source->size())
+				{
+					int a = (*source)[pos + 0];
+					int b = (*source)[pos + 1];
+					int d = (*source)[pos + 2];
+
+					if (a == '?' && b == '?')
+					{
+						switch (d)
+						{
+						case '=': c = '#'; pos += 3; break;
+						case '/': c = '\\'; pos += 3; break;
+						case '\'': c = '^'; pos += 3; break;
+						case '(': c = '['; pos += 3; break;
+						case ')': c = ']'; pos += 3; break;
+						case '!': c = '|'; pos += 3; break;
+						case '<': c = '{'; pos += 3; break;
+						case '>': c = '}'; pos += 3; break;
+						case '-': c = '~'; pos += 3; break;
+						default:
+							c = (*source)[pos++];
+							break;
+						}
+					}
+					else
+					{
+						c = (*source)[pos++];
+					}
+				}
+				else
+				{
+					c = (*source)[pos++];
+				}
+
+				if (c == '\\')
+				{
+					int ucn = 0;
+					size_t consumed = 0;
+					if (TryDecodeUCN(*source, pos, ucn, consumed))
+					{
+						c = ucn;
+						pos += consumed;
+					}
+				}
+
+				if (c == '\\' && pos < source->size() && (*source)[pos] == '\n')
+				{
+					++pos;
+					continue;
+				}
+
+				return c;
+			}
+		}
+	};
 
 	PPTokenizer(IPPTokenStream& output)
-		: output(output)
+		: output(output), finished(false), line_start(true),
+		  directive_start(false), include_pending(false)
 	{}
 
 	void process(int c)
 	{
-		// TODO:  Your code goes here.
-
-		// 1. do translation features
-		// 2. tokenize resulting stream
-		// 3. call an output.emit_* function for each token.
-
 		if (c == EndOfFile)
 		{
-			output.emit_identifier("not_yet_implemented");
+			if (finished)
+				return;
+
+			finished = true;
+			run();
 			output.emit_eof();
+			return;
 		}
 
-		// TIP: Reference implementation is about 1000 lines of code.
-		// It is a state machine with about 50 states, most of which
-		// are simple transitions of the operators.
+		raw_input.push_back((char)c);
+	}
+
+	void run()
+	{
+		source = decode_utf8(raw_input);
+		Scanner sc(source);
+
+		while (true)
+		{
+			if (scan_whitespace_run(sc))
+				continue;
+
+			if (sc.peek(0) == EndOfFile)
+				break;
+
+			if (include_pending)
+			{
+				if (sc.peek(0) == '<' || sc.peek(0) == '"')
+				{
+					scan_header_name(sc);
+					continue;
+				}
+
+				directive_start = false;
+				include_pending = false;
+			}
+
+			if (scan_raw_string_literal(sc))
+				continue;
+			if (scan_string_literal(sc))
+				continue;
+			if (scan_character_literal(sc))
+				continue;
+			if (scan_identifier_or_operator(sc))
+				continue;
+			if (scan_pp_number(sc))
+				continue;
+			if (scan_preprocessing_op_or_punc(sc))
+				continue;
+
+			scan_non_whitespace_character(sc);
+		}
+	}
+
+	static bool IsIdentifierStartCodePoint(int cp)
+	{
+		if (cp == '_' || (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z'))
+			return true;
+
+		return InRanges(AnnexE1_Allowed_RangesSorted, cp)
+			&& !InRanges(AnnexE2_DisallowedInitially_RangesSorted, cp);
+	}
+
+	static bool IsIdentifierContinueCodePoint(int cp)
+	{
+		if (IsIdentifierStartCodePoint(cp) || (cp >= '0' && cp <= '9'))
+			return true;
+
+		return InRanges(AnnexE2_DisallowedInitially_RangesSorted, cp);
+	}
+
+	static bool IsWhitespaceNoNewline(int cp)
+	{
+		return cp == ' ' || cp == '\t' || cp == '\v' || cp == '\f';
+	}
+
+	static bool IsHexDigit(int cp)
+	{
+		return (cp >= '0' && cp <= '9')
+			|| (cp >= 'a' && cp <= 'f')
+			|| (cp >= 'A' && cp <= 'F');
+	}
+
+	static bool IsOctDigit(int cp)
+	{
+		return cp >= '0' && cp <= '7';
+	}
+
+	static bool IsSimpleEscapeCodePoint(int cp)
+	{
+		return SimpleEscapeSequence_CodePoints.count(cp) != 0;
+	}
+
+	static bool InRanges(const vector<pair<int, int>>& ranges, int cp)
+	{
+		for (size_t i = 0; i < ranges.size(); ++i)
+		{
+			const pair<int, int>& r = ranges[i];
+			if (cp < r.first)
+				return false;
+			if (cp <= r.second)
+				return true;
+		}
+
+		return false;
+	}
+
+	static void AppendUTF8(string& s, int cp)
+	{
+		if (cp < 0)
+			throw logic_error("invalid code point");
+
+		if (cp <= 0x7F)
+		{
+			s.push_back((char) cp);
+		}
+		else if (cp <= 0x7FF)
+		{
+			s.push_back((char) (0xC0 | ((cp >> 6) & 0x1F)));
+			s.push_back((char) (0x80 | ((cp >> 0) & 0x3F)));
+		}
+		else if (cp <= 0xFFFF)
+		{
+			s.push_back((char) (0xE0 | ((cp >> 12) & 0x0F)));
+			s.push_back((char) (0x80 | ((cp >> 6) & 0x3F)));
+			s.push_back((char) (0x80 | ((cp >> 0) & 0x3F)));
+		}
+		else if (cp <= 0x10FFFF)
+		{
+			s.push_back((char) (0xF0 | ((cp >> 18) & 0x07)));
+			s.push_back((char) (0x80 | ((cp >> 12) & 0x3F)));
+			s.push_back((char) (0x80 | ((cp >> 6) & 0x3F)));
+			s.push_back((char) (0x80 | ((cp >> 0) & 0x3F)));
+		}
+		else
+		{
+			throw logic_error("invalid code point");
+		}
+	}
+
+	static bool TryDecodeUCN(const vector<int>& source, size_t pos, int& cp, size_t& consumed)
+	{
+		consumed = 0;
+
+		if (pos >= source.size() || (source[pos] != 'u' && source[pos] != 'U'))
+			return false;
+
+		bool long_form = source[pos] == 'U';
+		size_t digits = long_form ? 8 : 4;
+		if (pos + 1 + digits > source.size())
+			return false;
+
+		cp = 0;
+		for (size_t i = 0; i < digits; ++i)
+		{
+			int c = source[pos + 1 + i];
+			if (!IsHexDigit(c))
+				return false;
+			cp = (cp << 4) + HexCharToValue(c);
+		}
+
+		if (cp > 0x10FFFF)
+			throw logic_error("invalid code point");
+
+		consumed = 1 + digits;
+		return true;
+	}
+
+	static bool IsRawStringDelimiterChar(int cp)
+	{
+		if (cp == ' ' || cp == '(' || cp == ')' || cp == '\\' || cp == '\n'
+			|| cp == '\t' || cp == '\v' || cp == '\f')
+		{
+			return false;
+		}
+
+		return cp >= 0x20 && cp != 0x7F;
+	}
+
+	static bool IsOperatorWord(const string& s)
+	{
+		return Digraph_IdentifierLike_Operators.count(s) != 0;
+	}
+
+	static bool Matches(Scanner sc, const string& s)
+	{
+		for (size_t i = 0; i < s.size(); ++i)
+		{
+			if (sc.next_normal() != (unsigned char) s[i])
+				return false;
+		}
+
+		return true;
+	}
+
+	bool scan_whitespace_run(Scanner& sc)
+	{
+		int c = sc.peek(0);
+		if (c == EndOfFile || (!IsWhitespaceNoNewline(c) && c != '\n' && !(c == '/' && (sc.peek(1) == '/' || sc.peek(1) == '*'))))
+			return false;
+
+		vector<PendingToken> pending;
+		bool segment_has_nonnewline = false;
+
+		while (true)
+		{
+			c = sc.peek(0);
+			if (c == EndOfFile)
+				break;
+
+			if (IsWhitespaceNoNewline(c))
+			{
+				sc.next_normal();
+				segment_has_nonnewline = true;
+				continue;
+			}
+
+			if (c == '/' && sc.peek(1) == '/')
+			{
+				sc.next_normal();
+				sc.next_normal();
+				segment_has_nonnewline = true;
+
+				while (true)
+				{
+					c = sc.peek(0);
+					if (c == EndOfFile || c == '\n')
+						break;
+					sc.next_normal();
+					segment_has_nonnewline = true;
+				}
+
+				continue;
+			}
+
+			if (c == '/' && sc.peek(1) == '*')
+			{
+				sc.next_normal();
+				sc.next_normal();
+				segment_has_nonnewline = true;
+
+				while (true)
+				{
+					c = sc.peek(0);
+					if (c == EndOfFile)
+						throw logic_error("partial comment");
+
+					if (c == '*' && sc.peek(1) == '/')
+					{
+						sc.next_normal();
+						sc.next_normal();
+						segment_has_nonnewline = true;
+						break;
+					}
+
+					sc.next_normal();
+					segment_has_nonnewline = true;
+				}
+
+				continue;
+			}
+
+			if (c == '\n')
+			{
+				if (segment_has_nonnewline)
+				{
+					pending.push_back(PendingToken::Whitespace);
+					segment_has_nonnewline = false;
+				}
+
+				pending.push_back(PendingToken::NewLine);
+				sc.next_normal();
+				emit_pending(pending);
+				return true;
+			}
+
+			break;
+		}
+
+		if (segment_has_nonnewline)
+			pending.push_back(PendingToken::Whitespace);
+
+		emit_pending(pending);
+		return !pending.empty();
+	}
+
+	void emit_pending(const vector<PendingToken>& pending)
+	{
+		for (size_t i = 0; i < pending.size(); ++i)
+		{
+			if (pending[i] == PendingToken::Whitespace)
+			{
+				emit_token(TokenKind::Whitespace, "");
+			}
+			else
+			{
+				emit_token(TokenKind::NewLine, "");
+			}
+		}
+	}
+
+	void emit_token(TokenKind kind, const string& data)
+	{
+		bool at_line_start = line_start;
+
+		switch (kind)
+		{
+		case TokenKind::Whitespace:
+			output.emit_whitespace_sequence();
+			return;
+		case TokenKind::NewLine:
+			output.emit_new_line();
+			line_start = true;
+			directive_start = false;
+			include_pending = false;
+			return;
+		case TokenKind::HeaderName:
+			output.emit_header_name(data);
+			break;
+		case TokenKind::Identifier:
+			output.emit_identifier(data);
+			break;
+		case TokenKind::PpNumber:
+			output.emit_pp_number(data);
+			break;
+		case TokenKind::CharacterLiteral:
+			output.emit_character_literal(data);
+			break;
+		case TokenKind::UserDefinedCharacterLiteral:
+			output.emit_user_defined_character_literal(data);
+			break;
+		case TokenKind::StringLiteral:
+			output.emit_string_literal(data);
+			break;
+		case TokenKind::UserDefinedStringLiteral:
+			output.emit_user_defined_string_literal(data);
+			break;
+		case TokenKind::PreprocessingOpOrPunc:
+			output.emit_preprocessing_op_or_punc(data);
+			break;
+		case TokenKind::NonWhitespaceCharacter:
+			output.emit_non_whitespace_char(data);
+			break;
+		}
+
+		line_start = false;
+		if (kind == TokenKind::HeaderName)
+		{
+			directive_start = false;
+			include_pending = false;
+			return;
+		}
+
+		if (kind == TokenKind::Identifier && directive_start && data == "include")
+		{
+			include_pending = true;
+			return;
+		}
+
+		if (kind == TokenKind::PreprocessingOpOrPunc && at_line_start && (data == "#" || data == "%:"))
+		{
+			directive_start = true;
+			include_pending = false;
+			return;
+		}
+
+		directive_start = false;
+		include_pending = false;
+	}
+
+	void scan_header_name(Scanner& sc)
+	{
+		int opener = sc.peek(0);
+		if (opener != '<' && opener != '"')
+			throw logic_error("internal error");
+
+		string data;
+		int closer = opener == '<' ? '>' : '"';
+		AppendUTF8(data, sc.next_normal());
+
+		while (true)
+		{
+			int c = sc.peek(0);
+			if (c == EndOfFile || c == '\n')
+				throw logic_error("unterminated header name");
+
+			AppendUTF8(data, sc.next_normal());
+			if (c == closer)
+				break;
+		}
+
+		emit_token(TokenKind::HeaderName, data);
+	}
+
+	bool scan_raw_string_literal(Scanner& sc)
+	{
+		size_t prefix_len = 0;
+		if (Matches(sc, "u8R\""))
+			prefix_len = 4;
+		else if (Matches(sc, "uR\"") || Matches(sc, "UR\"") || Matches(sc, "LR\""))
+			prefix_len = 3;
+		else if (Matches(sc, "R\""))
+			prefix_len = 2;
+		else
+			return false;
+
+		string data;
+		for (size_t i = 0; i < prefix_len; ++i)
+			AppendUTF8(data, sc.source->at(sc.pos++));
+
+		string delimiter;
+		while (true)
+		{
+			if (sc.pos >= sc.source->size())
+				throw logic_error("invalid characters in raw string delimiter");
+
+			int c = sc.source->at(sc.pos);
+			if (c == '(')
+			{
+				AppendUTF8(data, c);
+				++sc.pos;
+				break;
+			}
+
+			if (!IsRawStringDelimiterChar(c))
+				throw logic_error("invalid characters in raw string delimiter");
+
+			AppendUTF8(delimiter, c);
+			AppendUTF8(data, c);
+			++sc.pos;
+
+			if (delimiter.size() > 16)
+				throw logic_error("raw string delimiter too long");
+		}
+
+		while (true)
+		{
+			if (sc.pos >= sc.source->size())
+				throw logic_error("unterminated raw string literal");
+
+			int c = sc.source->at(sc.pos);
+			if (c == ')' )
+			{
+				bool match = true;
+				for (size_t i = 0; i < delimiter.size(); ++i)
+				{
+					if (sc.pos + 1 + i >= sc.source->size() || sc.source->at(sc.pos + 1 + i) != delimiter[i])
+					{
+						match = false;
+						break;
+					}
+				}
+				if (match && sc.pos + 1 + delimiter.size() < sc.source->size() && sc.source->at(sc.pos + 1 + delimiter.size()) == '"')
+				{
+					AppendUTF8(data, c);
+					++sc.pos;
+					for (size_t i = 0; i < delimiter.size(); ++i)
+					{
+						AppendUTF8(data, sc.source->at(sc.pos));
+						++sc.pos;
+					}
+					AppendUTF8(data, '"');
+					++sc.pos;
+					break;
+				}
+			}
+
+			AppendUTF8(data, c);
+			++sc.pos;
+		}
+
+		if (IsIdentifierStartCodePoint(sc.peek(0)))
+		{
+			string suffix = consume_identifier_sequence(sc);
+			data += suffix;
+			emit_token(TokenKind::UserDefinedStringLiteral, data);
+		}
+		else
+		{
+			emit_token(TokenKind::StringLiteral, data);
+		}
+
+		return true;
+	}
+
+	bool scan_string_literal(Scanner& sc)
+	{
+		string prefix;
+		if (Matches(sc, "u8\""))
+			prefix = "u8";
+		else if (Matches(sc, "u\""))
+			prefix = "u";
+		else if (Matches(sc, "U\""))
+			prefix = "U";
+		else if (Matches(sc, "L\""))
+			prefix = "L";
+		else if (sc.peek(0) == '"')
+			prefix.clear();
+		else
+			return false;
+
+		string data = prefix;
+		if (!prefix.empty())
+		{
+			for (size_t i = 0; i < prefix.size(); ++i)
+				sc.next_normal();
+		}
+
+		if (sc.peek(0) != '"')
+			return false;
+
+		AppendUTF8(data, sc.next_normal());
+
+		while (true)
+		{
+			int c = sc.peek(0);
+			if (c == EndOfFile || c == '\n')
+				throw logic_error("unterminated string literal");
+
+			c = sc.next_normal();
+			AppendUTF8(data, c);
+
+			if (c == '"')
+				break;
+
+			if (c == '\\')
+			{
+				int n = sc.peek(0);
+				if (n == EndOfFile || n == '\n')
+					throw logic_error("unterminated string literal");
+
+				if (n == 'x')
+				{
+					AppendUTF8(data, sc.next_normal());
+					int hex = sc.peek(0);
+					if (!IsHexDigit(hex))
+						throw logic_error("invalid hex escape sequence");
+					while (IsHexDigit(sc.peek(0)))
+						AppendUTF8(data, sc.next_normal());
+				}
+				else if (IsOctDigit(n))
+				{
+					AppendUTF8(data, sc.next_normal());
+					int count = 1;
+					while (count < 3 && IsOctDigit(sc.peek(0)))
+					{
+						AppendUTF8(data, sc.next_normal());
+						++count;
+					}
+				}
+				else if (IsSimpleEscapeCodePoint(n))
+				{
+					AppendUTF8(data, sc.next_normal());
+				}
+				else
+				{
+					throw logic_error("invalid escape sequence");
+				}
+			}
+		}
+
+		if (IsIdentifierStartCodePoint(sc.peek(0)))
+		{
+			string suffix = consume_identifier_sequence(sc);
+			data += suffix;
+			emit_token(TokenKind::UserDefinedStringLiteral, data);
+		}
+		else
+		{
+			emit_token(TokenKind::StringLiteral, data);
+		}
+
+		return true;
+	}
+
+	bool scan_character_literal(Scanner& sc)
+	{
+		string prefix;
+		if (Matches(sc, "u'"))
+			prefix = "u";
+		else if (Matches(sc, "U'"))
+			prefix = "U";
+		else if (Matches(sc, "L'"))
+			prefix = "L";
+		else if (sc.peek(0) == '\'')
+			prefix.clear();
+		else
+			return false;
+
+		string data = prefix;
+		if (!prefix.empty())
+		{
+			sc.next_normal();
+		}
+
+		if (sc.peek(0) != '\'')
+			return false;
+
+		AppendUTF8(data, sc.next_normal());
+
+		while (true)
+		{
+			int c = sc.peek(0);
+			if (c == EndOfFile || c == '\n')
+				throw logic_error("unterminated character literal");
+
+			c = sc.next_normal();
+			AppendUTF8(data, c);
+
+			if (c == '\'')
+				break;
+
+			if (c == '\\')
+			{
+				int n = sc.peek(0);
+				if (n == EndOfFile || n == '\n')
+					throw logic_error("unterminated character literal");
+
+				if (n == 'x')
+				{
+					AppendUTF8(data, sc.next_normal());
+					int hex = sc.peek(0);
+					if (!IsHexDigit(hex))
+						throw logic_error("invalid hex escape sequence");
+					while (IsHexDigit(sc.peek(0)))
+						AppendUTF8(data, sc.next_normal());
+				}
+				else if (IsOctDigit(n))
+				{
+					AppendUTF8(data, sc.next_normal());
+					int count = 1;
+					while (count < 3 && IsOctDigit(sc.peek(0)))
+					{
+						AppendUTF8(data, sc.next_normal());
+						++count;
+					}
+				}
+				else if (IsSimpleEscapeCodePoint(n))
+				{
+					AppendUTF8(data, sc.next_normal());
+				}
+				else
+				{
+					throw logic_error("invalid escape sequence");
+				}
+			}
+		}
+
+		if (IsIdentifierStartCodePoint(sc.peek(0)))
+		{
+			string suffix = consume_identifier_sequence(sc);
+			data += suffix;
+			emit_token(TokenKind::UserDefinedCharacterLiteral, data);
+		}
+		else
+		{
+			emit_token(TokenKind::CharacterLiteral, data);
+		}
+
+		return true;
+	}
+
+	bool scan_identifier_or_operator(Scanner& sc)
+	{
+		if (!IsIdentifierStartCodePoint(sc.peek(0)))
+			return false;
+
+		string data = consume_identifier_sequence(sc);
+		if (IsOperatorWord(data))
+			emit_token(TokenKind::PreprocessingOpOrPunc, data);
+		else
+			emit_token(TokenKind::Identifier, data);
+		return true;
+	}
+
+	string consume_identifier_sequence(Scanner& sc)
+	{
+		string data;
+		AppendUTF8(data, sc.next_normal());
+		while (IsIdentifierContinueCodePoint(sc.peek(0)))
+			AppendUTF8(data, sc.next_normal());
+		return data;
+	}
+
+	bool scan_pp_number(Scanner& sc)
+	{
+		int c = sc.peek(0);
+		if (!( (c >= '0' && c <= '9') || (c == '.' && (sc.peek(1) >= '0' && sc.peek(1) <= '9')) ))
+			return false;
+
+		string data;
+		if (c == '.')
+		{
+			AppendUTF8(data, sc.next_normal());
+			AppendUTF8(data, sc.next_normal());
+		}
+		else
+		{
+			AppendUTF8(data, sc.next_normal());
+		}
+
+		while (true)
+		{
+			int p0 = sc.peek(0);
+			int p1 = sc.peek(1);
+
+			if (p0 >= '0' && p0 <= '9')
+			{
+				AppendUTF8(data, sc.next_normal());
+				continue;
+			}
+
+			if ((p0 == 'e' || p0 == 'E') && (p1 == '+' || p1 == '-'))
+			{
+				AppendUTF8(data, sc.next_normal());
+				AppendUTF8(data, sc.next_normal());
+				continue;
+			}
+
+			if (IsIdentifierContinueCodePoint(p0))
+			{
+				AppendUTF8(data, sc.next_normal());
+				continue;
+			}
+
+			if (p0 == '.')
+			{
+				AppendUTF8(data, sc.next_normal());
+				continue;
+			}
+
+			break;
+		}
+
+		emit_token(TokenKind::PpNumber, data);
+		return true;
+	}
+
+	bool scan_preprocessing_op_or_punc(Scanner& sc)
+	{
+		if (sc.peek(0) == '<' && sc.peek(1) == ':' && sc.peek(2) == ':' && sc.peek(3) != ':' && sc.peek(3) != '>')
+		{
+			string data;
+			AppendUTF8(data, sc.next_normal());
+			emit_token(TokenKind::PreprocessingOpOrPunc, data);
+			return true;
+		}
+
+		static const char* Candidates[] =
+		{
+			"%:%:", "->*", "<<=", ">>=", "<<", ">>", "...",
+			"<:", ":>", "<%", "%>", "%:", "##", "::", ".*",
+			"+=", "-=", "*=", "/=", "%=", "^=", "&=", "|=",
+			"==", "!=", "<=", ">=", "&&", "||", "++", "--", "->",
+			"{", "}", "[", "]", "(", ")", ";", ":", "?", ".", "+", "-", "*", "/", "%", "^", "&", "|", "~", "!", "=", "<", ">", ",", "#"
+		};
+
+		for (size_t i = 0; i < sizeof(Candidates)/sizeof(Candidates[0]); ++i)
+		{
+			string candidate = Candidates[i];
+			if (Matches(sc, candidate))
+			{
+				string data;
+				for (size_t j = 0; j < candidate.size(); ++j)
+					AppendUTF8(data, sc.next_normal());
+				emit_token(TokenKind::PreprocessingOpOrPunc, data);
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	void scan_non_whitespace_character(Scanner& sc)
+	{
+		string data;
+		AppendUTF8(data, sc.next_normal());
+		emit_token(TokenKind::NonWhitespaceCharacter, data);
+	}
+
+	static bool Matches(Scanner sc, const char* s)
+	{
+		for (const char* p = s; *p; ++p)
+		{
+			if (sc.next_normal() != (unsigned char) *p)
+				return false;
+		}
+
+		return true;
+	}
+
+	vector<int> decode_utf8(const string& input)
+	{
+		vector<int> output;
+
+		for (size_t i = 0; i < input.size(); )
+		{
+			unsigned char c = (unsigned char) input[i];
+			if (c < 0x80)
+			{
+				output.push_back(c);
+				++i;
+				continue;
+			}
+
+			if (c >= 0x80 && c <= 0xBF)
+				throw logic_error("utf8 trailing code unit (10xxxxxx) at start");
+
+			if (c >= 0xC0 && c <= 0xDF)
+			{
+				if (i + 1 >= input.size() || ((unsigned char) input[i + 1] & 0xC0) != 0x80)
+					throw logic_error("utf8 expected trailing byte (10xxxxxx)");
+				int cp = ((c & 0x1F) << 6)
+					| (((unsigned char) input[i + 1]) & 0x3F);
+				output.push_back(cp);
+				i += 2;
+				continue;
+			}
+
+			if (c >= 0xE0 && c <= 0xEF)
+			{
+				if (i + 2 >= input.size()
+					|| ((unsigned char) input[i + 1] & 0xC0) != 0x80
+					|| ((unsigned char) input[i + 2] & 0xC0) != 0x80)
+				{
+					throw logic_error("utf8 expected trailing byte (10xxxxxx)");
+				}
+
+				int cp = ((c & 0x0F) << 12)
+					| ((((unsigned char) input[i + 1]) & 0x3F) << 6)
+					| (((unsigned char) input[i + 2]) & 0x3F);
+				output.push_back(cp);
+				i += 3;
+				continue;
+			}
+
+			if (c >= 0xF0 && c <= 0xF7)
+			{
+				if (i + 3 >= input.size()
+					|| ((unsigned char) input[i + 1] & 0xC0) != 0x80
+					|| ((unsigned char) input[i + 2] & 0xC0) != 0x80
+					|| ((unsigned char) input[i + 3] & 0xC0) != 0x80)
+				{
+					throw logic_error("utf8 expected trailing byte (10xxxxxx)");
+				}
+
+				int cp = ((c & 0x07) << 18)
+					| ((((unsigned char) input[i + 1]) & 0x3F) << 12)
+					| ((((unsigned char) input[i + 2]) & 0x3F) << 6)
+					| (((unsigned char) input[i + 3]) & 0x3F);
+
+				if (cp > 0x10FFFF)
+					throw logic_error("invalid code point");
+
+				output.push_back(cp);
+				i += 4;
+				continue;
+			}
+
+			throw logic_error("utf8 invalid unit (111111xx)");
+		}
+
+		return output;
 	}
 };
 
@@ -184,4 +1160,3 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
-
