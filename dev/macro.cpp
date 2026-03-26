@@ -931,6 +931,7 @@ struct Driver
 	}
 };
 
+#ifndef MACRO_EMBED_ONLY
 int main()
 {
 	try
@@ -950,3 +951,4 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+#endif

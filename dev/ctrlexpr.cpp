@@ -24,6 +24,13 @@ bool PA3Mock_IsDefinedIdentifier(const string& identifier)
 		return identifier[0] % 2;
 }
 
+bool (*PA3IsDefinedIdentifierCallback)(const string&) = nullptr;
+
+void PA3SetIsDefinedIdentifierCallback(bool (*cb)(const string&))
+{
+	PA3IsDefinedIdentifierCallback = cb;
+}
+
 struct CEValue
 {
 	bool is_unsigned = false;
@@ -349,7 +356,8 @@ struct Parser
 					target = cur().text;
 					pos++;
 				}
-				return {true, eval ? MakeSigned(PA3Mock_IsDefinedIdentifier(target) ? 1 : 0) : MakeSigned(0)};
+				bool is_def = PA3IsDefinedIdentifierCallback ? PA3IsDefinedIdentifierCallback(target) : PA3Mock_IsDefinedIdentifier(target);
+				return {true, eval ? MakeSigned(is_def ? 1 : 0) : MakeSigned(0)};
 			}
 			if (!eval) return {true, MakeSigned(0)};
 			if (id == "true") return {true, MakeSigned(1)};
@@ -629,6 +637,7 @@ struct Parser
 	}
 };
 
+#ifndef CTREXPR_EMBED_ONLY
 int main()
 {
 	try
@@ -702,3 +711,4 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+#endif
