@@ -1088,6 +1088,7 @@ bool ParseFloatingLiteral(const string& s, bool& ud, string& ud_suffix, string& 
 	return true;
 }
 
+#ifndef POSTTOKEN_EMBED_ONLY
 int main()
 {
 	try
@@ -1365,3 +1366,4 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+#endif
