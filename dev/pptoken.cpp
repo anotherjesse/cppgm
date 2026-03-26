@@ -781,56 +781,72 @@ struct PPTokenizer
 
 		if (raw)
 		{
-			if (j >= cps.size() || cps[j] != '"')
+			const size_t orig_start = spans[start].begin;
+			size_t oj = orig_start;
+
+			if (StartsWith(original_cps, oj, "u8R\""))
+				oj += 3;
+			else if (StartsWith(original_cps, oj, "uR\"") || StartsWith(original_cps, oj, "UR\"") || StartsWith(original_cps, oj, "LR\""))
+				oj += 2;
+			else if (StartsWith(original_cps, oj, "R\""))
+				oj += 1;
+			else
 				return false;
 
-			++j;
-			size_t delim_begin = j;
-			while (j < cps.size() && cps[j] != '(')
+			if (oj >= original_cps.size() || original_cps[oj] != '"')
+				throw runtime_error("unterminated raw string literal");
+
+			++oj;
+			size_t delim_begin = oj;
+			while (oj < original_cps.size() && original_cps[oj] != '(')
 			{
-				if (!is_valid_raw_delim_char(cps[j]))
+				if (!is_valid_raw_delim_char(original_cps[oj]))
 					throw runtime_error("invalid raw string delimiter");
-				++j;
-				if (j - delim_begin > 16)
+				++oj;
+				if (oj - delim_begin > 16)
 					throw runtime_error("raw string delimiter too long");
 			}
 
-			if (j >= cps.size() || cps[j] != '(')
+			if (oj >= original_cps.size() || original_cps[oj] != '(')
 				throw runtime_error("unterminated raw string literal");
 
-			const size_t delim_len = j - delim_begin;
-			const size_t content_begin = j + 1;
-			size_t k = content_begin;
+			const size_t delim_len = oj - delim_begin;
+			++oj;
+			size_t ok = oj;
 			for (;;)
 			{
-				if (k >= cps.size())
+				if (ok >= original_cps.size())
 					throw runtime_error("unterminated raw string literal");
 
-				if (cps[k] != ')')
+				if (original_cps[ok] != ')')
 				{
-					++k;
+					++ok;
 					continue;
 				}
 
-				if (k + 1 + delim_len >= cps.size())
+				if (ok + 1 + delim_len >= original_cps.size())
 				{
-					++k;
+					++ok;
 					continue;
 				}
 
 				bool delim_ok = true;
 				for (size_t d = 0; d < delim_len; ++d)
-					if (cps[k + 1 + d] != cps[delim_begin + d])
+					if (original_cps[ok + 1 + d] != original_cps[delim_begin + d])
 						delim_ok = false;
 
-				if (!delim_ok || cps[k + 1 + delim_len] != '"')
+				if (!delim_ok || original_cps[ok + 1 + delim_len] != '"')
 				{
-					++k;
+					++ok;
 					continue;
 				}
 
-				size_t end = k + 1 + delim_len + 1;
-				string raw_data = encode_original_range(original_cps, spans, start, end);
+				const size_t orig_end = ok + 1 + delim_len + 1;
+				size_t end = start;
+				while (end < spans.size() && spans[end].begin < orig_end)
+					++end;
+
+				string raw_data = encode_range(original_cps, orig_start, orig_end);
 				i = end;
 				is_ud = try_parse_ud_suffix(cps, i);
 				if (is_ud)
