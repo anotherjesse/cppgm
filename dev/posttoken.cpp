@@ -2104,7 +2104,11 @@ static void EmitSingleToken(DebugPostTokenOutputStream& output, const CollectedP
 	}
 }
 
-int main()
+#ifndef POSTTOKEN_MAIN
+#define POSTTOKEN_MAIN main
+#endif
+
+int POSTTOKEN_MAIN()
 {
 	try
 	{

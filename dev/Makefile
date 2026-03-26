@@ -10,7 +10,7 @@ TARGETS = \
 	cy86
 
 CXX ?= g++
-CXXFLAGS ?= -g -std=gnu++11 -Wall
+CXXFLAGS ?= -g -O2 -std=gnu++11 -Wall
 CXXFLAGS += -Wl,--wrap=main
 CPPFLAGS += -Isrc
 DEPFLAGS = -MMD -MP
