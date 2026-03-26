@@ -705,6 +705,26 @@ bool IsValidIdentifierAscii(const string& s)
 	return true;
 }
 
+bool DecodeUtf8(const string& s, vector<uint32_t>& out);
+
+bool IsValidIdentifier(const string& s)
+{
+	vector<uint32_t> cps;
+	if (!DecodeUtf8(s, cps) || cps.empty())
+		return false;
+
+	if (!::IsIdentifierStart(static_cast<int>(cps[0])))
+		return false;
+
+	for (size_t i = 1; i < cps.size(); ++i)
+	{
+		if (!::IsIdentifierContinue(static_cast<int>(cps[i])))
+			return false;
+	}
+
+	return true;
+}
+
 int HexValue(int c)
 {
 	if (c >= '0' && c <= '9') return c - '0';
@@ -1640,7 +1660,7 @@ bool TrySplitUdSuffix(const string& s, string& prefix, string& ud_suffix)
 	ud_suffix = s.substr(pos);
 	if (prefix.empty())
 		return false;
-	if (!IsValidIdentifierAscii(ud_suffix))
+	if (!IsValidIdentifier(ud_suffix))
 		return false;
 	if (ud_suffix[0] != '_')
 		return false;
@@ -1905,6 +1925,7 @@ void RunPostToken(const string& input, DebugPostTokenOutputStream& output)
 }
 } // namespace pa2
 
+#ifndef CPPGM_EMBED_POSTTOKEN
 int main()
 {
 	try
@@ -1923,3 +1944,4 @@ int main()
 		return EXIT_FAILURE;
 	}
 }
+#endif
