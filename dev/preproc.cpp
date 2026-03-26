@@ -1260,6 +1260,7 @@ pair<string, string> BuildDateTimeLiterals()
 	return make_pair(date, time_s);
 }
 
+#ifndef PREPROC_EMBED_ONLY
 int main(int argc, char** argv)
 {
 	try
@@ -1300,3 +1301,4 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 }
+#endif
